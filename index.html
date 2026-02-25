@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>點讀小卡製作工具</title>
     
     <!-- 載入 Tailwind CSS -->
@@ -20,53 +20,87 @@
 
     <style>
         /* 隱藏滾動條但保留滾動功能，讓畫面更乾淨 */
-        ::-webkit-scrollbar {
-            width: 8px;
-            height: 8px;
-        }
-        ::-webkit-scrollbar-track {
-            background: #1e293b; 
-        }
-        ::-webkit-scrollbar-thumb {
-            background: #475569; 
-            border-radius: 4px;
-        }
-        ::-webkit-scrollbar-thumb:hover {
-            background: #64748b; 
-        }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: #1e293b; }
+        ::-webkit-scrollbar-thumb { background: #475569; border-radius: 4px; }
+        ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+        
+        /* 避免手機上長按反白 */
+        body { -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+        input[type="text"] { -webkit-user-select: auto; user-select: auto; }
     </style>
 </head>
 <body>
     <div id="root"></div>
 
     <script type="text/babel">
-        const { useState, useRef, useEffect, useCallback } = React;
+        const { useState, useEffect, useMemo } = React;
+
+        // --- 共用：動態載入外部腳本 (加上防呆機制) ---
+        const loadScript = (src) => new Promise((resolve, reject) => {
+            if (document.querySelector(`script[src="${src}"]`)) return resolve();
+            const script = document.createElement('script');
+            script.src = src;
+            script.onload = resolve;
+            script.onerror = reject;
+            document.head.appendChild(script);
+        });
+
+        // --- 文字描邊專用組件 (解決匯出套件無法完美呈現外描邊的問題) ---
+        const StrokeText = ({ text, color, strokeColor, strokeWidth, strokeOpacity, fontSize, letterSpacing }) => {
+            const strokeColorRgba = useMemo(() => {
+                let hex = strokeColor || '#ffffff';
+                hex = hex.replace('#', '');
+                if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
+                const r = parseInt(hex.substring(0, 2), 16) || 255;
+                const g = parseInt(hex.substring(2, 4), 16) || 255;
+                const b = parseInt(hex.substring(4, 6), 16) || 255;
+                return `rgba(${r}, ${g}, ${b}, ${strokeOpacity / 100})`;
+            }, [strokeColor, strokeOpacity]);
+
+            if (!text) return null;
+            
+            // 使用絕對的像素級行高，確保轉檔時不誤判
+            const fixedLineHeight = `${fontSize * 1.2}px`;
+
+            return (
+                <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    {/* 底層：描邊層 (置中疊加) */}
+                    {strokeWidth > 0 && (
+                        <div className="font-bold" style={{
+                            position: 'absolute',
+                            WebkitTextStroke: `${strokeWidth}px ${strokeColorRgba}`,
+                            color: strokeColorRgba, // 內部填滿描邊色防漏光
+                            zIndex: 1, whiteSpace: 'nowrap',
+                            fontSize: `${fontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight
+                        }}>
+                            {text}
+                        </div>
+                    )}
+                    {/* 頂層：文字填色層 */}
+                    <div className="font-bold" style={{
+                        position: 'relative', color: color,
+                        zIndex: 2, whiteSpace: 'nowrap',
+                        fontSize: `${fontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight
+                    }}>
+                        {text}
+                    </div>
+                </div>
+            );
+        };
 
         // --- 預設資料模型 ---
         const DEFAULT_CELL = {
-            image: null,
-            scale: 1,
-            x: 0,
-            y: 0,
-            rotate: 0,
-            text: '',
-            zhuyin: '',
-            textFontSize: 24,
-            textLetterSpacing: 0,
-            textColor: '#1e293b',
-            textX: 0,
-            textY: 0,
-            circleX: 0,
-            circleY: 0
+            image: null, scale: 1, x: 0, y: 0, rotate: 0,
+            text: '', zhuyin: '',
+            textFontSize: 24, textLetterSpacing: 0, textColor: '#1e293b',
+            textStrokeColor: '#ffffff', textStrokeWidth: 4, textStrokeOpacity: 100,     
+            textX: 0, textY: 0, circleX: 0, circleY: 0
         };
 
         const DEFAULT_TITLE = {
-            text: '自訂標題',
-            bgColor: '#ffffff',
-            bgImage: null,
-            fontSize: 24,
-            letterSpacing: 4,
-            color: '#000000'
+            text: '自訂標題', bgColor: '#ffffff', bgImage: null,
+            fontSize: 24, letterSpacing: 4, color: '#000000'
         };
 
         const TEMPLATES = [
@@ -76,114 +110,132 @@
 
         function App() {
             // --- 狀態管理 ---
-            const [step, setStep] = useState(1); // 1: 設定頁, 2: 編輯頁
-            
-            // 設定狀態
+            const [step, setStep] = useState(1); 
             const [config, setConfig] = useState({
-                template: 'T1',
-                border: 'square', // square, rounded, none
-                zhuyin: false,
-                outputSize: 'card', // card, a6, 3x5, 4x6
-                exportFormat: 'pdf', // pdf, jpg
-                bgImage: null
+                template: 'T1', border: 'square', zhuyin: false,
+                outputSize: 'card', exportFormat: 'pdf', bgImage: null
             });
-
-            // 內容狀態
             const [titleData, setTitleData] = useState({ ...DEFAULT_TITLE });
             const [cells, setCells] = useState(Array(4).fill(null).map(() => ({ ...DEFAULT_CELL })));
             
             // UI 狀態
-            const [activeElement, setActiveElement] = useState(null); // { type: 'title' } or { type: 'cell', index: 0 }
+            const getInitialZoom = () => (typeof window !== 'undefined' && window.innerWidth < 768) ? 0.45 : 1;
+            const [activeElement, setActiveElement] = useState(null);
             const [isExporting, setIsExporting] = useState(false);
-            const [zoom, setZoom] = useState(1);
-            const workspaceRef = useRef(null);
+            const [zoom, setZoom] = useState(getInitialZoom());
 
-            // --- 處理圖片上傳 ---
-            const handleImageUpload = (e, callback) => {
+            useEffect(() => { if (step === 1) setZoom(getInitialZoom()); }, [step]);
+
+            // --- 狀態更新 Helper ---
+            const updateCell = (index, key, value) => {
+                setCells(prev => {
+                    const newCells = [...prev];
+                    newCells[index] = { ...newCells[index], [key]: value };
+                    return newCells;
+                });
+            };
+
+            const updateTitle = (key, value) => {
+                setTitleData(prev => ({ ...prev, [key]: value }));
+            };
+
+            // 優化：處理圖片上傳並清理舊的 Blob URL 避免記憶體洩漏
+            const handleImageUpload = (e, callback, oldUrl = null) => {
                 const file = e.target.files[0];
                 if (file) {
-                    const url = URL.createObjectURL(file);
-                    callback(url);
+                    if (oldUrl) URL.revokeObjectURL(oldUrl); 
+                    callback(URL.createObjectURL(file));
                 }
+                e.target.value = ''; 
             };
 
             // --- 匯出檔案 (PDF 或 JPG) ---
             const handleExport = async () => {
                 setIsExporting(true);
-                setActiveElement(null); // 隱藏選取框
+                setActiveElement(null); 
                 
-                // 等待 React 重新渲染隱藏選取狀態
-                await new Promise(r => setTimeout(r, 100));
+                // 暫存目前的縮放比例，並將畫布強制恢復為 100% (zoom=1) 以避免轉檔引擎誤判
+                const currentZoom = zoom;
+                setZoom(1);
+
+                // 等待 React 重新渲染畫布至 1:1 尺寸與取消選取狀態
+                await new Promise(r => setTimeout(r, 300)); 
 
                 try {
-                    // 1. 確保 html2canvas 載入
-                    if (!window.html2canvas) {
-                        await new Promise((resolve, reject) => {
-                            const script = document.createElement('script');
-                            script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
-                            script.onload = resolve;
-                            script.onerror = reject;
-                            document.head.appendChild(script);
-                        });
-                    }
-
-                    // 2. 將畫面轉為高畫質 Canvas
+                    await loadScript('https://cdnjs.cloudflare.com/ajax/libs/html-to-image/1.11.11/html-to-image.min.js');
+                    
                     const element = document.getElementById('card-export-target');
-                    const canvas = await window.html2canvas(element, {
-                        scale: 4, // 提高匯出畫質
-                        useCORS: true,
-                        backgroundColor: null
+                    const isT1 = config.template === 'T1';
+                    const baseCanvasWidth = isT1 ? 800 : 600;
+                    const baseCanvasHeight = isT1 ? 800 * (7.5 / 10.5) : 600 * (10.5 / 7.5);
+                    
+                    // html-to-image 採用原生 SVG 技術，所見即所得，保證不跑位
+                    const dataUrl = await window.htmlToImage.toJpeg(element, { 
+                        pixelRatio: 4, // 高畫質匯出
+                        backgroundColor: '#ffffff',
+                        width: baseCanvasWidth,
+                        height: baseCanvasHeight,
+                        style: {
+                            transform: 'none',
+                            transformOrigin: 'top left',
+                            margin: '0'
+                        }
                     });
 
                     if (config.exportFormat === 'jpg') {
-                        // 匯出 JPG
-                        const url = canvas.toDataURL('image/jpeg', 1.0);
                         const a = document.createElement('a');
-                        a.href = url;
+                        a.href = dataUrl;
                         a.download = `點讀小卡_${new Date().getTime()}.jpg`;
                         a.click();
                     } else if (config.exportFormat === 'pdf') {
-                        // 匯出 PDF
-                        if (!window.jspdf) {
-                            await new Promise((resolve, reject) => {
-                                const script = document.createElement('script');
-                                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
-                                script.onload = resolve;
-                                script.onerror = reject;
-                                document.head.appendChild(script);
-                            });
-                        }
+                        await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
 
-                        // 根據選擇尺寸決定 PDF 實體長寬 (單位: mm)
-                        let pdfWidth = config.template === 'T1' ? 105 : 75;
-                        let pdfHeight = config.template === 'T1' ? 75 : 105;
+                        let pdfWidth = isT1 ? 105 : 75;
+                        let pdfHeight = isT1 ? 75 : 105;
                         
                         if (config.outputSize === 'a6') {
-                            pdfWidth = config.template === 'T1' ? 148 : 105;
-                            pdfHeight = config.template === 'T1' ? 105 : 148;
+                            pdfWidth = isT1 ? 148 : 105;
+                            pdfHeight = isT1 ? 105 : 148;
                         } else if (config.outputSize === '3x5') {
-                            pdfWidth = config.template === 'T1' ? 127 : 76.2;
-                            pdfHeight = config.template === 'T1' ? 76.2 : 127;
+                            pdfWidth = isT1 ? 127 : 76.2;
+                            pdfHeight = isT1 ? 76.2 : 127;
                         } else if (config.outputSize === '4x6') {
-                            pdfWidth = config.template === 'T1' ? 152.4 : 101.6;
-                            pdfHeight = config.template === 'T1' ? 101.6 : 152.4;
+                            pdfWidth = isT1 ? 152.4 : 101.6;
+                            pdfHeight = isT1 ? 101.6 : 152.4;
                         }
 
                         const pdf = new window.jspdf.jsPDF({
-                            orientation: config.template === 'T1' ? 'landscape' : 'portrait',
+                            orientation: isT1 ? 'landscape' : 'portrait',
                             unit: 'mm',
                             format: [pdfWidth, pdfHeight]
                         });
 
-                        const imgData = canvas.toDataURL('image/jpeg', 1.0);
-                        pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+                        // 【修復變形 Bug】: 計算置中與等比例縮放，確保 A6/4x6 輸出時圓形不變形
+                        const canvasRatio = baseCanvasWidth / baseCanvasHeight;
+                        const paperRatio = pdfWidth / pdfHeight;
+                        let printW = pdfWidth;
+                        let printH = pdfHeight;
+
+                        if (canvasRatio > paperRatio) {
+                            printW = pdfWidth;
+                            printH = pdfWidth / canvasRatio;
+                        } else {
+                            printH = pdfHeight;
+                            printW = pdfHeight * canvasRatio;
+                        }
+                        
+                        const x = (pdfWidth - printW) / 2;
+                        const y = (pdfHeight - printH) / 2;
+
+                        pdf.addImage(dataUrl, 'JPEG', x, y, printW, printH);
                         pdf.save(`點讀小卡_${new Date().getTime()}.pdf`);
                     }
-
                 } catch (error) {
                     console.error('匯出失敗:', error);
                     alert('檔案匯出失敗，請稍後再試。');
                 } finally {
+                    // 匯出完畢後，安全地將畫面縮放比例恢復原狀
+                    setZoom(currentZoom);
                     setIsExporting(false);
                 }
             };
@@ -193,28 +245,24 @@
             // -------------------------------------------------------------
             if (step === 1) {
                 return (
-                    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 font-sans text-slate-800">
-                        <div className="bg-white rounded-2xl shadow-xl p-8 w-full max-w-2xl">
-                            <h1 className="text-3xl font-extrabold text-center mb-8 text-indigo-600 flex items-center justify-center gap-3">
-                                <i className="fas fa-cog"></i>
-                                點讀小卡製作工具
+                    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 md:p-6 font-sans text-slate-800">
+                        <div className="bg-white rounded-2xl shadow-xl p-6 md:p-8 w-full max-w-2xl">
+                            <h1 className="text-2xl md:text-3xl font-extrabold text-center mb-8 text-indigo-600 flex items-center justify-center gap-3">
+                                <i className="fas fa-cog"></i>點讀小卡製作工具
                             </h1>
-
                             <div className="space-y-6">
-                                {/* 模板選擇 */}
                                 <div>
                                     <label className="block text-sm font-semibold mb-2">1. 選擇模板</label>
-                                    <div className="grid grid-cols-2 gap-4">
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                                         {TEMPLATES.map(t => (
                                             <div 
                                                 key={t.id}
                                                 onClick={() => {
                                                     setConfig({...config, template: t.id});
                                                     setCells(Array(t.id === 'T1' ? 4 : 3).fill(null).map(() => ({ ...DEFAULT_CELL })));
+                                                    setActiveElement(null); // 修復 Bug：切換模板時清空選取狀態防閃退
                                                 }}
-                                                className={`border-2 rounded-xl p-4 cursor-pointer transition-all ${
-                                                    config.template === t.id ? 'border-indigo-500 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-300'
-                                                }`}
+                                                className={`border-2 rounded-xl p-4 cursor-pointer transition-all ${config.template === t.id ? 'border-indigo-500 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-300'}`}
                                             >
                                                 <div className="text-center font-medium text-slate-700">{t.name}</div>
                                                 <div className="text-xs text-center text-slate-500 mt-1">
@@ -224,92 +272,67 @@
                                         ))}
                                     </div>
                                 </div>
-
                                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                    {/* 外框選擇 */}
                                     <div>
                                         <label className="block text-sm font-semibold mb-2">2. 外框樣式</label>
                                         <select 
                                             className="w-full border-slate-300 rounded-lg p-3 bg-slate-50 focus:ring-indigo-500 focus:border-indigo-500 border"
-                                            value={config.border}
-                                            onChange={(e) => setConfig({...config, border: e.target.value})}
+                                            value={config.border} onChange={(e) => setConfig({...config, border: e.target.value})}
                                         >
-                                            <option value="none">無框</option>
-                                            <option value="square">方框</option>
-                                            <option value="rounded">圓角框</option>
+                                            <option value="none">無框</option><option value="square">方框</option><option value="rounded">圓角框</option>
                                         </select>
                                     </div>
-
-                                    {/* 輸出尺寸 */}
                                     <div>
                                         <label className="block text-sm font-semibold mb-2">3. 圖檔輸出尺寸</label>
                                         <select 
                                             className="w-full border-slate-300 rounded-lg p-3 bg-slate-50 focus:ring-indigo-500 focus:border-indigo-500 border"
-                                            value={config.outputSize}
-                                            onChange={(e) => setConfig({...config, outputSize: e.target.value})}
+                                            value={config.outputSize} onChange={(e) => setConfig({...config, outputSize: e.target.value})}
                                         >
-                                            <option value="card">標準點讀小卡 (7.5 x 10.5cm)</option>
-                                            <option value="a6">A6 尺寸</option>
-                                            <option value="3x5">3x5 吋照片</option>
-                                            <option value="4x6">4x6 吋照片</option>
+                                            <option value="card">標準點讀小卡 (7.5 x 10.5cm)</option><option value="a6">A6 尺寸</option>
+                                            <option value="3x5">3x5 吋照片</option><option value="4x6">4x6 吋照片</option>
                                         </select>
                                     </div>
                                 </div>
-
-                                {/* 輸出檔案類型 */}
                                 <div>
                                     <label className="block text-sm font-semibold mb-2">4. 輸出檔案類型</label>
-                                    <div className="flex gap-4">
-                                        <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-200 transition">
-                                            <input type="radio" name="exportFormat" checked={config.exportFormat === 'pdf'} onChange={() => setConfig({...config, exportFormat: 'pdf'})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
-                                            <span className="font-medium text-slate-700">PDF 文件</span>
-                                        </label>
-                                        <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-200 transition">
-                                            <input type="radio" name="exportFormat" checked={config.exportFormat === 'jpg'} onChange={() => setConfig({...config, exportFormat: 'jpg'})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
-                                            <span className="font-medium text-slate-700">JPG 圖檔</span>
-                                        </label>
+                                    <div className="flex flex-wrap gap-4">
+                                        {['pdf', 'jpg'].map(type => (
+                                            <label key={type} className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-200 transition">
+                                                <input type="radio" name="exportFormat" checked={config.exportFormat === type} onChange={() => setConfig({...config, exportFormat: type})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
+                                                <span className="font-medium text-slate-700">{type.toUpperCase()} {type === 'pdf' ? '文件' : '圖檔'}</span>
+                                            </label>
+                                        ))}
                                     </div>
                                 </div>
-
-                                {/* 注音選項 */}
                                 <div>
                                     <label className="block text-sm font-semibold mb-2">5. 文字注音功能</label>
-                                    <div className="flex gap-4">
+                                    <div className="flex flex-wrap gap-4">
                                         <label className="flex items-center gap-2 cursor-pointer">
                                             <input type="radio" name="zhuyin" checked={!config.zhuyin} onChange={() => setConfig({...config, zhuyin: false})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
                                             <span>無</span>
                                         </label>
                                         <label className="flex items-center gap-2 cursor-pointer">
                                             <input type="radio" name="zhuyin" checked={config.zhuyin} onChange={() => setConfig({...config, zhuyin: true})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
-                                            <span>有 (自動縮小字型並預留注音空間)</span>
+                                            <span>有 (預留注音空間)</span>
                                         </label>
                                     </div>
                                 </div>
-
-                                {/* 背景圖片上傳 */}
                                 <div>
                                     <label className="block text-sm font-semibold mb-2">6. 全局背景底圖 (選填)</label>
-                                    <div className="flex items-center gap-4">
+                                    <div className="flex flex-wrap items-center gap-4">
                                         <label className="flex items-center justify-center px-4 py-2 bg-slate-100 border border-slate-300 rounded-lg cursor-pointer hover:bg-slate-200 transition text-sm">
-                                            <i className="fas fa-upload mr-2"></i>
-                                            上傳背景圖
-                                            <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (url) => setConfig({...config, bgImage: url}))} />
+                                            <i className="fas fa-upload mr-2"></i>上傳背景圖
+                                            <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (url) => setConfig({...config, bgImage: url}), config.bgImage)} />
                                         </label>
-                                        {config.bgImage && (
-                                            <button onClick={() => setConfig({...config, bgImage: null})} className="text-red-500 text-sm hover:underline">
-                                                移除背景
-                                            </button>
-                                        )}
+                                        {config.bgImage && <button onClick={() => {
+                                            URL.revokeObjectURL(config.bgImage);
+                                            setConfig({...config, bgImage: null});
+                                        }} className="text-red-500 text-sm hover:underline">移除背景</button>}
                                     </div>
                                 </div>
                             </div>
-
-                            <button 
-                                onClick={() => setStep(2)}
-                                className="w-full mt-8 bg-indigo-600 text-white font-bold text-lg py-4 rounded-xl hover:bg-indigo-700 transition flex items-center justify-center gap-2"
-                            >
-                                開始編輯
-                                <i className="fas fa-chevron-right"></i>
+                            <button onClick={() => setStep(2)} className="w-full mt-8 bg-indigo-600 text-white font-bold text-lg py-4 rounded-xl hover:bg-indigo-700 transition flex items-center justify-center gap-2">
+                                開始編輯 <i className="fas fa-chevron-right"></i>
                             </button>
                         </div>
                     </div>
@@ -319,361 +342,192 @@
             // -------------------------------------------------------------
             // 第二步：編輯頁面
             // -------------------------------------------------------------
-            
             const isT1 = config.template === 'T1';
-            const aspectStyle = isT1 ? { aspectRatio: '10.5 / 7.5' } : { aspectRatio: '7.5 / 10.5' };
+            const baseCanvasWidth = isT1 ? 800 : 600;
+            const baseCanvasHeight = isT1 ? 800 * (7.5 / 10.5) : 600 * (10.5 / 7.5);
             
-            const getBorderClass = () => {
-                if (config.border === 'square') return 'border-2 border-slate-800';
-                if (config.border === 'rounded') return 'border-2 border-slate-800 rounded-xl overflow-hidden';
-                return ''; // none
-            };
-            const getInnerBorderClass = () => {
-                if (config.border === 'none') return '';
-                return 'border border-slate-400';
-            };
+            const borderClass = config.border === 'square' ? 'border-2 border-slate-800' : 
+                                config.border === 'rounded' ? 'border-2 border-slate-800 rounded-xl overflow-hidden' : '';
+            const innerBorderClass = config.border !== 'none' ? 'border border-slate-400' : '';
+
+            const isCellActive = activeElement?.type === 'cell';
+            const activeCellIndex = isCellActive ? activeElement.index : -1;
+            const activeCellData = isCellActive ? cells[activeCellIndex] : null;
+
+            // 模組化：渲染單元格區塊
+            const CellsBlock = (
+                <div className={`w-full h-full grid ${isT1 ? 'grid-cols-2 grid-rows-2' : 'grid-cols-1 grid-rows-3'}`} style={{ [isT1 ? 'width' : 'height']: '90.476%' }}>
+                    {cells.map((cell, idx) => (
+                        <CellRenderer 
+                            key={idx} cell={cell} idx={idx} 
+                            isActive={activeElement?.type === 'cell' && activeElement?.index === idx}
+                            onClick={() => setActiveElement({ type: 'cell', index: idx })}
+                            config={config} innerBorder={innerBorderClass}
+                            circleSize={isT1 ? "25.26%" : "16%"}
+                        />
+                    ))}
+                </div>
+            );
+
+            // 模組化：渲染標題區塊
+            const TitleBlock = (
+                <div 
+                    className={`relative cursor-pointer overflow-hidden flex items-center justify-center ${innerBorderClass} ${activeElement?.type === 'title' && !isExporting ? 'ring-4 ring-indigo-500 ring-inset z-10' : ''}`}
+                    style={{ [isT1 ? 'width' : 'height']: '9.524%', [isT1 ? 'height' : 'width']: '100%', backgroundColor: titleData.bgImage ? 'transparent' : titleData.bgColor }}
+                    onClick={() => setActiveElement({ type: 'title' })}
+                >
+                    {titleData.bgImage && <img src={titleData.bgImage} className="absolute inset-0 w-full h-full object-cover" alt="Title BG" />}
+                    
+                    <div className="absolute inset-0 w-full h-full p-2 flex items-center justify-center">
+                        <div className="font-bold whitespace-pre-wrap text-center" style={{ 
+                            writingMode: isT1 ? 'vertical-rl' : 'horizontal-tb',
+                            textOrientation: isT1 ? 'upright' : 'mixed', 
+                            letterSpacing: `${titleData.letterSpacing}px`, 
+                            fontSize: `${titleData.fontSize}px`, 
+                            color: titleData.color, 
+                            lineHeight: `${titleData.fontSize * 1.2}px` 
+                        }}>
+                            {titleData.text || '標題區域'}
+                        </div>
+                    </div>
+                </div>
+            );
 
             return (
                 <div className="h-screen flex flex-col bg-slate-800 text-slate-100 font-sans overflow-hidden">
                     {/* 頂部工具列 */}
-                    <header className="h-16 bg-slate-900 flex items-center justify-between px-6 shadow-md z-20">
-                        <button onClick={() => setStep(1)} className="flex items-center gap-2 text-slate-300 hover:text-white transition">
-                            <i className="fas fa-arrow-left"></i> 重新設定
+                    <header className="h-16 shrink-0 bg-slate-900 flex items-center justify-between px-3 md:px-6 shadow-md z-20">
+                        <button onClick={() => { setStep(1); setActiveElement(null); }} className="flex items-center gap-2 text-slate-300 hover:text-white transition text-sm md:text-base">
+                            <i className="fas fa-arrow-left"></i> <span className="hidden sm:inline">重新設定</span>
                         </button>
-                        
-                        <div className="flex items-center gap-4">
-                            <div className="flex items-center bg-slate-800 rounded-lg p-1 mr-4">
-                                <button onClick={() => setZoom(z => Math.max(0.5, z - 0.1))} className="p-2 hover:bg-slate-700 rounded text-slate-400"><i className="fas fa-search-minus"></i></button>
-                                <span className="text-xs px-2 w-12 text-center">{Math.round(zoom * 100)}%</span>
+                        <div className="flex items-center gap-2 md:gap-4">
+                            <div className="flex items-center bg-slate-800 rounded-lg p-1 mr-2 md:mr-4">
+                                <button onClick={() => setZoom(z => Math.max(0.2, z - 0.1))} className="p-2 hover:bg-slate-700 rounded text-slate-400"><i className="fas fa-search-minus"></i></button>
+                                <span className="text-xs px-2 w-10 md:w-12 text-center">{Math.round(zoom * 100)}%</span>
                                 <button onClick={() => setZoom(z => Math.min(2, z + 0.1))} className="p-2 hover:bg-slate-700 rounded text-slate-400"><i className="fas fa-search-plus"></i></button>
                             </div>
-                            <button 
-                                onClick={handleExport}
-                                disabled={isExporting}
-                                className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2 rounded-lg font-semibold flex items-center gap-2 transition disabled:opacity-50"
-                            >
-                                <i className="fas fa-download"></i>
-                                {isExporting ? '匯出中...' : `匯出 ${config.exportFormat.toUpperCase()}`}
+                            <button onClick={handleExport} disabled={isExporting} className="bg-emerald-600 hover:bg-emerald-500 text-white px-3 md:px-5 py-2 rounded-lg text-sm md:text-base font-semibold flex items-center gap-2 transition disabled:opacity-50">
+                                {isExporting ? <i className="fas fa-spinner fa-spin"></i> : <i className="fas fa-download"></i>}
+                                {isExporting ? ' 匯出中...' : <span className="hidden sm:inline"> 匯出 {config.exportFormat.toUpperCase()}</span>}
                             </button>
                         </div>
                     </header>
 
-                    <div className="flex-1 flex overflow-hidden">
-                        {/* 左側工作區 (畫布) */}
-                        <div 
-                            ref={workspaceRef}
-                            className="flex-1 bg-slate-950 overflow-auto flex items-center justify-center p-8 cursor-move"
-                            onClick={() => setActiveElement(null)}
-                        >
-                            <div style={{ transform: `scale(${zoom})`, transition: 'transform 0.2s ease-out', transformOrigin: 'center' }}>
-                                <div 
-                                    id="card-export-target" 
-                                    className={`bg-white relative shadow-2xl ${getBorderClass()}`}
-                                    style={{
-                                        width: isT1 ? '800px' : '600px', 
-                                        ...aspectStyle,
-                                        backgroundImage: config.bgImage ? `url(${config.bgImage})` : 'none',
-                                        backgroundSize: 'cover',
-                                        backgroundPosition: 'center',
-                                    }}
-                                    onClick={(e) => e.stopPropagation()}
-                                >
-                                    
-                                    {/* 模板一：橫向四格 */}
-                                    {isT1 && (
-                                        <div className="absolute inset-0 flex">
-                                            {/* 左側單元區 */}
-                                            <div className="h-full grid grid-cols-2 grid-rows-2" style={{ width: '90.476%' }}>
-                                                {cells.map((cell, idx) => (
-                                                    <CellRenderer 
-                                                        key={idx} 
-                                                        cell={cell} 
-                                                        idx={idx} 
-                                                        isActive={activeElement?.type === 'cell' && activeElement?.index === idx}
-                                                        onClick={() => setActiveElement({ type: 'cell', index: idx })}
-                                                        config={config}
-                                                        innerBorder={getInnerBorderClass()}
-                                                        circleSize="25.26%"
-                                                        isT1={isT1}
-                                                    />
-                                                ))}
-                                            </div>
-                                            {/* 右側標題區 */}
-                                            <div 
-                                                className={`h-full relative cursor-pointer ${getInnerBorderClass()} ${activeElement?.type === 'title' && !isExporting ? 'ring-4 ring-indigo-500 ring-inset z-10' : ''}`}
-                                                style={{ width: '9.524%', backgroundColor: titleData.bgImage ? 'transparent' : titleData.bgColor }}
-                                                onClick={() => setActiveElement({ type: 'title' })}
-                                            >
-                                                {titleData.bgImage && <img src={titleData.bgImage} className="absolute inset-0 w-full h-full object-cover" alt="Title BG" />}
-                                                <div className="absolute inset-0 flex items-center justify-center">
-                                                    <div className="font-bold whitespace-pre-wrap text-center" style={{ 
-                                                        writingMode: 'vertical-rl', 
-                                                        textOrientation: 'upright', 
-                                                        letterSpacing: `${titleData.letterSpacing}px`, 
-                                                        fontSize: `${titleData.fontSize}px`,
-                                                        color: titleData.color
-                                                    }}>
-                                                        {titleData.text || '標題區域'}
-                                                    </div>
-                                                </div>
-                                            </div>
+                    {/* 主要編輯區塊 */}
+                    <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0">
+                        {/* 畫布區 */}
+                        <div className="flex-1 bg-slate-950 overflow-auto p-4 md:p-8 relative" onClick={() => setActiveElement(null)}>
+                            <div style={{ width: `${baseCanvasWidth * zoom}px`, height: `${baseCanvasHeight * zoom}px`, margin: '0 auto', position: 'relative' }}>
+                                <div style={{ 
+                                    width: `${baseCanvasWidth}px`, height: `${baseCanvasHeight}px`, 
+                                    transform: zoom === 1 ? 'none' : `scale(${zoom})`, 
+                                    transformOrigin: 'top left', transition: 'transform 0.2s ease-out', 
+                                    position: 'absolute', top: 0, left: 0 
+                                }}>
+                                    <div id="card-export-target" className={`bg-white shadow-2xl ${borderClass}`} style={{ width: '100%', height: '100%', backgroundImage: config.bgImage ? `url(${config.bgImage})` : 'none', backgroundSize: 'cover', backgroundPosition: 'center', position: 'relative' }} onClick={(e) => e.stopPropagation()}>
+                                        <div className={`absolute inset-0 flex ${isT1 ? '' : 'flex-col'}`}>
+                                            {isT1 ? <>{CellsBlock}{TitleBlock}</> : <>{TitleBlock}{CellsBlock}</>}
                                         </div>
-                                    )}
-
-                                    {/* 模板二：直向三格 */}
-                                    {!isT1 && (
-                                        <div className="absolute inset-0 flex flex-col">
-                                            {/* 頂部標題區 */}
-                                            <div 
-                                                className={`w-full relative cursor-pointer ${getInnerBorderClass()} ${activeElement?.type === 'title' && !isExporting ? 'ring-4 ring-indigo-500 ring-inset z-10' : ''}`}
-                                                style={{ height: '9.524%', backgroundColor: titleData.bgImage ? 'transparent' : titleData.bgColor }}
-                                                onClick={() => setActiveElement({ type: 'title' })}
-                                            >
-                                                {titleData.bgImage && <img src={titleData.bgImage} className="absolute inset-0 w-full h-full object-cover" alt="Title BG" />}
-                                                <div className="absolute inset-0 flex items-center justify-center">
-                                                    <div className="font-bold whitespace-pre-wrap text-center" style={{ 
-                                                        writingMode: 'horizontal-tb',
-                                                        letterSpacing: `${titleData.letterSpacing}px`, 
-                                                        fontSize: `${titleData.fontSize}px`,
-                                                        color: titleData.color
-                                                    }}>
-                                                        {titleData.text || '標題區域'}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                            {/* 下方單元區 */}
-                                            <div className="w-full grid grid-cols-1 grid-rows-3" style={{ height: '90.476%' }}>
-                                                {cells.map((cell, idx) => (
-                                                    <CellRenderer 
-                                                        key={idx} 
-                                                        cell={cell} 
-                                                        idx={idx} 
-                                                        isActive={activeElement?.type === 'cell' && activeElement?.index === idx}
-                                                        onClick={() => setActiveElement({ type: 'cell', index: idx })}
-                                                        config={config}
-                                                        innerBorder={getInnerBorderClass()}
-                                                        circleSize="16%"
-                                                        isT1={isT1}
-                                                    />
-                                                ))}
-                                            </div>
-                                        </div>
-                                    )}
-
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
-                        {/* 右側屬性控制面板 */}
-                        <div className="w-80 bg-slate-900 border-l border-slate-700 flex flex-col shadow-xl z-10 overflow-y-auto">
-                            <div className="p-4 border-b border-slate-800 bg-slate-800/50">
-                                <h2 className="font-bold flex items-center gap-2 text-indigo-400">
-                                    <i className="fas fa-cog"></i> 
-                                    {activeElement ? '屬性編輯' : '操作提示'}
-                                </h2>
+                        {/* 控制面板 */}
+                        <div className="h-[45%] md:h-full w-full md:w-80 shrink-0 bg-slate-900 border-t md:border-t-0 md:border-l border-slate-700 flex flex-col shadow-xl z-10 overflow-hidden">
+                            <div className="p-3 md:p-4 border-b border-slate-800 bg-slate-800/50 shrink-0">
+                                <h2 className="font-bold flex items-center gap-2 text-indigo-400 text-sm md:text-base"><i className="fas fa-sliders-h"></i> {activeElement ? '屬性編輯' : '操作提示'}</h2>
                             </div>
-
-                            <div className="p-6">
+                            <div className="p-4 md:p-6 overflow-y-auto flex-1 pb-10">
                                 {!activeElement && (
-                                    <div className="text-slate-400 text-center flex flex-col items-center justify-center py-12 gap-4">
-                                        <i className="fas fa-hand-pointer text-5xl text-slate-600"></i>
-                                        <p>請點擊左側畫布中的<br/><span className="text-indigo-400">圖片區塊</span> 或 <span className="text-indigo-400">標題區域</span><br/>來開始編輯內容</p>
+                                    <div className="text-slate-400 text-center flex flex-col items-center justify-center py-8 md:py-12 gap-4">
+                                        <i className="fas fa-hand-pointer text-4xl md:text-5xl text-slate-600"></i>
+                                        <p className="text-sm md:text-base">請點擊畫布中的<br/><span className="text-indigo-400">圖片區塊</span> 或 <span className="text-indigo-400">標題區域</span><br/>來開始編輯內容</p>
                                     </div>
                                 )}
 
-                                {/* 編輯標題區塊 */}
+                                {/* 標題編輯面板 */}
                                 {activeElement?.type === 'title' && (
-                                    <div className="space-y-6">
+                                    <div className="space-y-4 md:space-y-6">
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                                            <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2">
-                                                <i className="fas fa-font"></i> 標題文字設定
-                                            </label>
-                                            <input 
-                                                type="text" 
-                                                maxLength={20}
-                                                className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-indigo-500 focus:outline-none mb-4"
-                                                value={titleData.text}
-                                                onChange={(e) => setTitleData({...titleData, text: e.target.value})}
-                                                placeholder="輸入標題..."
-                                            />
+                                            <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2"><i className="fas fa-font"></i> 標題文字設定</label>
+                                            <input type="text" maxLength={20} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-indigo-500 focus:outline-none mb-4" value={titleData.text} onChange={(e) => updateTitle('text', e.target.value)} placeholder="輸入標題..." />
                                             <div className="space-y-4">
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-text-height"></i>} label="字體大小" 
-                                                    min="10" max="60" step="1" 
-                                                    value={titleData.fontSize} 
-                                                    onChange={(v) => setTitleData({...titleData, fontSize: v})} 
-                                                />
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-arrows-alt-h"></i>} label="字元間距" 
-                                                    min="-5" max="30" step="1" 
-                                                    value={titleData.letterSpacing} 
-                                                    onChange={(v) => setTitleData({...titleData, letterSpacing: v})} 
-                                                />
+                                                <SliderControl icon={<i className="fas fa-text-height"></i>} label="字體大小" min="10" max="60" step="1" value={titleData.fontSize} onChange={(v) => updateTitle('fontSize', v)} />
+                                                <SliderControl icon={<i className="fas fa-arrows-alt-h"></i>} label="字元間距" min="-5" max="30" step="1" value={titleData.letterSpacing} onChange={(v) => updateTitle('letterSpacing', v)} />
                                                 <div className="grid grid-cols-2 gap-4">
-                                                    <div>
-                                                        <label className="block text-xs text-slate-400 mb-1">文字顏色</label>
-                                                        <input 
-                                                            type="color" 
-                                                            className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent"
-                                                            value={titleData.color}
-                                                            onChange={(e) => setTitleData({...titleData, color: e.target.value})}
-                                                        />
-                                                    </div>
-                                                    <div>
-                                                        <label className="block text-xs text-slate-400 mb-1">背景底色</label>
-                                                        <input 
-                                                            type="color" 
-                                                            className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent"
-                                                            value={titleData.bgColor}
-                                                            onChange={(e) => setTitleData({...titleData, bgColor: e.target.value})}
-                                                        />
-                                                    </div>
+                                                    <div><label className="block text-xs text-slate-400 mb-1">文字顏色</label><input type="color" className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent" value={titleData.color} onChange={(e) => updateTitle('color', e.target.value)} /></div>
+                                                    <div><label className="block text-xs text-slate-400 mb-1">背景底色</label><input type="color" className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent" value={titleData.bgColor} onChange={(e) => updateTitle('bgColor', e.target.value)} /></div>
                                                 </div>
                                             </div>
                                         </div>
-
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                                             <label className="block text-sm font-semibold mb-2 text-slate-300">上傳標題底圖</label>
                                             <label className="flex items-center justify-center px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg cursor-pointer hover:bg-slate-600 transition">
                                                 <i className="fas fa-upload mr-2"></i> 上傳圖片
-                                                <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (url) => setTitleData({...titleData, bgImage: url}))} />
+                                                <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (url) => updateTitle('bgImage', url), titleData.bgImage)} />
                                             </label>
-                                            {titleData.bgImage && (
-                                                <button onClick={() => setTitleData({...titleData, bgImage: null})} className="mt-2 text-red-400 text-sm hover:text-red-300 w-full text-center">移除圖片</button>
-                                            )}
+                                            {titleData.bgImage && <button onClick={() => {
+                                                URL.revokeObjectURL(titleData.bgImage);
+                                                updateTitle('bgImage', null);
+                                            }} className="mt-2 text-red-400 text-sm hover:text-red-300 w-full text-center">移除圖片</button>}
                                         </div>
                                     </div>
                                 )}
 
-                                {/* 編輯單元格 */}
-                                {activeElement?.type === 'cell' && (
-                                    <div className="space-y-6">
-                                        {/* 圖片設定區塊 */}
+                                {/* 單元格編輯面板 */}
+                                {isCellActive && (
+                                    <div className="space-y-4 md:space-y-6">
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                                            <label className="block text-sm font-semibold mb-3 text-indigo-300 flex items-center gap-2">
-                                                <i className="fas fa-image"></i> 圖片設定
-                                            </label>
+                                            <label className="block text-sm font-semibold mb-3 text-indigo-300 flex items-center gap-2"><i className="fas fa-image"></i> 圖片設定</label>
                                             <label className="flex w-full items-center justify-center px-4 py-3 bg-indigo-600 text-white rounded-lg cursor-pointer hover:bg-indigo-500 transition mb-4 shadow-lg shadow-indigo-900/50">
                                                 <i className="fas fa-upload mr-2"></i> 更換圖片
                                                 <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (url) => {
-                                                    const newCells = [...cells];
-                                                    newCells[activeElement.index].image = url;
-                                                    setCells(newCells);
-                                                })} />
-                                            </label>
-
-                                            <div className="space-y-4">
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-search-plus"></i>} label="縮放" 
-                                                    min="0.5" max="3" step="0.1" 
-                                                    value={cells[activeElement.index].scale} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].scale=v; setCells(n); }} 
-                                                />
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-arrows-alt-h"></i>} label="水平平移 (X)" 
-                                                    min="-200" max="200" step="5" 
-                                                    value={cells[activeElement.index].x} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].x=v; setCells(n); }} 
-                                                />
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-arrows-alt-v"></i>} label="垂直平移 (Y)" 
-                                                    min="-200" max="200" step="5" 
-                                                    value={cells[activeElement.index].y} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].y=v; setCells(n); }} 
-                                                />
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-redo"></i>} label="旋轉角度" 
-                                                    min="-180" max="180" step="1" 
-                                                    value={cells[activeElement.index].rotate} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].rotate=v; setCells(n); }} 
-                                                />
-                                            </div>
-                                        </div>
-
-                                        {/* 文字設定區塊 */}
-                                        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                                            <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2">
-                                                <i className="fas fa-font"></i> 單元文字設定
-                                            </label>
-                                            <input 
-                                                type="text" 
-                                                maxLength={10}
-                                                className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-emerald-500 focus:outline-none mb-2"
-                                                value={cells[activeElement.index].text}
-                                                onChange={(e) => { const n=[...cells]; n[activeElement.index].text=e.target.value; setCells(n); }}
-                                                placeholder="輸入文字 (最多10字)"
-                                            />
-                                            {config.zhuyin && (
-                                                <div className="mb-4">
-                                                    <label className="block text-xs text-slate-400 mb-1">注音 (選填)</label>
-                                                    <input 
-                                                        type="text" 
-                                                        className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-emerald-500 focus:outline-none text-sm"
-                                                        value={cells[activeElement.index].zhuyin}
-                                                        onChange={(e) => { const n=[...cells]; n[activeElement.index].zhuyin=e.target.value; setCells(n); }}
-                                                        placeholder="例：ㄉㄧㄢˇ ㄉㄨˊ"
-                                                    />
-                                                </div>
-                                            )}
-
-                                            <div className="space-y-4 pt-4 border-t border-slate-700">
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-text-height"></i>} label="字體大小" 
-                                                    min="10" max="50" step="1" 
-                                                    value={cells[activeElement.index].textFontSize} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textFontSize=v; setCells(n); }} 
-                                                />
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-expand-arrows-alt"></i>} label="字元間距" 
-                                                    min="-5" max="20" step="1" 
-                                                    value={cells[activeElement.index].textLetterSpacing} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textLetterSpacing=v; setCells(n); }} 
-                                                />
-                                                <div>
-                                                    <label className="block text-xs text-slate-400 mb-1">文字顏色</label>
-                                                    <input 
-                                                        type="color" 
-                                                        className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent"
-                                                        value={cells[activeElement.index].textColor}
-                                                        onChange={(e) => { const n=[...cells]; n[activeElement.index].textColor=e.target.value; setCells(n); }}
-                                                    />
-                                                </div>
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-arrows-alt-h"></i>} label="文字水平微調 (X)" 
-                                                    min="-150" max="150" step="2" 
-                                                    value={cells[activeElement.index].textX} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textX=v; setCells(n); }} 
-                                                />
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-arrows-alt-v"></i>} label="文字垂直微調 (Y)" 
-                                                    min="-150" max="150" step="2" 
-                                                    value={cells[activeElement.index].textY} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textY=v; setCells(n); }} 
-                                                />
-                                            </div>
-                                        </div>
-
-                                        {/* 圓框設定區塊 */}
-                                        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
-                                            <label className="block text-sm font-semibold mb-3 text-amber-300 flex items-center gap-2">
-                                                <i className="fas fa-circle-notch"></i> 點讀圓框定位
+                                                    setCells(prev => {
+                                                        const n = [...prev];
+                                                        n[activeCellIndex] = { ...n[activeCellIndex], image: url, scale: 1, x: 0, y: 0, rotate: 0 };
+                                                        return n;
+                                                    });
+                                                }, activeCellData.image)} />
                                             </label>
                                             <div className="space-y-4">
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-arrows-alt-h"></i>} label="圓框水平移動 (X)" 
-                                                    min="-200" max="200" step="2" 
-                                                    value={cells[activeElement.index].circleX} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].circleX=v; setCells(n); }} 
-                                                />
-                                                <SliderControl 
-                                                    icon={<i className="fas fa-arrows-alt-v"></i>} label="圓框垂直移動 (Y)" 
-                                                    min="-200" max="200" step="2" 
-                                                    value={cells[activeElement.index].circleY} 
-                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].circleY=v; setCells(n); }} 
-                                                />
+                                                <SliderControl icon={<i className="fas fa-search-plus"></i>} label="縮放" min="0.1" max="5" step="0.1" value={activeCellData.scale} onChange={(v) => updateCell(activeCellIndex, 'scale', v)} />
+                                                <SliderControl icon={<i className="fas fa-arrows-alt-h"></i>} label="水平平移 (X)" min="-400" max="400" step="5" value={activeCellData.x} onChange={(v) => updateCell(activeCellIndex, 'x', v)} />
+                                                <SliderControl icon={<i className="fas fa-arrows-alt-v"></i>} label="垂直平移 (Y)" min="-400" max="400" step="5" value={activeCellData.y} onChange={(v) => updateCell(activeCellIndex, 'y', v)} />
+                                                <SliderControl icon={<i className="fas fa-redo"></i>} label="旋轉角度" min="-180" max="180" step="1" value={activeCellData.rotate} onChange={(v) => updateCell(activeCellIndex, 'rotate', v)} />
                                             </div>
                                         </div>
 
+                                        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                                            <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2"><i className="fas fa-font"></i> 單元文字與描邊設定</label>
+                                            <input type="text" maxLength={10} className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-emerald-500 focus:outline-none mb-2" value={activeCellData.text} onChange={(e) => updateCell(activeCellIndex, 'text', e.target.value)} placeholder="輸入文字 (最多10字)" />
+                                            {config.zhuyin && <input type="text" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-emerald-500 focus:outline-none text-sm" value={activeCellData.zhuyin} onChange={(e) => updateCell(activeCellIndex, 'zhuyin', e.target.value)} placeholder="例：ㄉㄧㄢˇ ㄉㄨˊ" />}
+                                            <div className="space-y-4 pt-4 border-t border-slate-700 mt-4">
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div><label className="block text-xs text-slate-400 mb-1">文字顏色</label><input type="color" className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent" value={activeCellData.textColor} onChange={(e) => updateCell(activeCellIndex, 'textColor', e.target.value)} /></div>
+                                                    <div><label className="block text-xs text-slate-400 mb-1">描邊顏色</label><input type="color" className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent" value={activeCellData.textStrokeColor} onChange={(e) => updateCell(activeCellIndex, 'textStrokeColor', e.target.value)} /></div>
+                                                </div>
+                                                <SliderControl icon={<i className="fas fa-border-all"></i>} label="描邊粗細" min="0" max="20" step="1" value={activeCellData.textStrokeWidth} onChange={(v) => updateCell(activeCellIndex, 'textStrokeWidth', v)} />
+                                                <SliderControl icon={<i className="fas fa-eye"></i>} label="描邊不透明度 (%)" min="0" max="100" step="1" value={activeCellData.textStrokeOpacity} onChange={(v) => updateCell(activeCellIndex, 'textStrokeOpacity', v)} />
+                                                <SliderControl icon={<i className="fas fa-text-height"></i>} label="字體大小" min="10" max="50" step="1" value={activeCellData.textFontSize} onChange={(v) => updateCell(activeCellIndex, 'textFontSize', v)} />
+                                                <SliderControl icon={<i className="fas fa-expand-arrows-alt"></i>} label="字元間距" min="-5" max="20" step="1" value={activeCellData.textLetterSpacing} onChange={(v) => updateCell(activeCellIndex, 'textLetterSpacing', v)} />
+                                                <div className="pt-2">
+                                                    <div className="text-xs text-indigo-400 font-medium mb-2 border-b border-indigo-900 pb-1"><i className="fas fa-arrows-alt mr-1"></i> 文字位置微調</div>
+                                                    <div className="space-y-4">
+                                                        <SliderControl icon={<i className="fas fa-arrows-alt-h"></i>} label="水平移動 (X, 正數向右)" min="-800" max="800" step="5" value={activeCellData.textX} onChange={(v) => updateCell(activeCellIndex, 'textX', v)} />
+                                                        <SliderControl icon={<i className="fas fa-arrows-alt-v"></i>} label="垂直移動 (Y, 負數向上)" min="-800" max="800" step="5" value={activeCellData.textY} onChange={(v) => updateCell(activeCellIndex, 'textY', v)} />
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                                            <label className="block text-sm font-semibold mb-3 text-amber-300 flex items-center gap-2"><i className="fas fa-circle-notch"></i> 點讀圓框定位 (預設右上角2mm安全線)</label>
+                                            <div className="space-y-4">
+                                                <SliderControl icon={<i className="fas fa-arrows-alt-h"></i>} label="圓框水平移動 (X, 正數向右)" min="-800" max="800" step="5" value={activeCellData.circleX} onChange={(v) => updateCell(activeCellIndex, 'circleX', v)} />
+                                                <SliderControl icon={<i className="fas fa-arrows-alt-v"></i>} label="圓框垂直移動 (Y, 正數向下)" min="-800" max="800" step="5" value={activeCellData.circleY} onChange={(v) => updateCell(activeCellIndex, 'circleY', v)} />
+                                            </div>
+                                        </div>
                                     </div>
                                 )}
                             </div>
@@ -683,116 +537,64 @@
             );
         }
 
-        // --- 單元格渲染組件 ---
-        function CellRenderer({ cell, idx, isActive, onClick, config, innerBorder, circleSize, isT1 }) {
-            // 動態縮小文字以防爆框 
-            const len = cell.text.length;
+        function CellRenderer({ cell, idx, isActive, onClick, config, innerBorder, circleSize }) {
             let textScale = 1;
+            const len = cell.text.length;
             if (len > 8) textScale = 0.6;
             else if (len > 5) textScale = 0.8;
             else if (len > 3) textScale = 0.9;
-            
             if (config.zhuyin) textScale *= 0.85; 
 
-            // 【核心修正】將原本使用 CSS transform 縮放的邏輯，改為直接動態計算實際的 px 數值
-            // 因為 html2canvas 處理絕對定位元素 + transform 時會產生嚴重的座標飄移計算錯誤
             const finalFontSize = cell.textFontSize * textScale;
-            const finalPaddingY = 6 * textScale;
-            const finalPaddingX = 16 * textScale;
 
             return (
-                <div 
-                    className={`relative overflow-hidden cursor-pointer group bg-white/50 ${innerBorder} ${isActive ? 'ring-4 ring-indigo-500 ring-inset z-10' : ''}`}
-                    onClick={onClick}
-                >
+                <div className={`relative overflow-hidden cursor-pointer group bg-white/50 ${innerBorder} ${isActive ? 'ring-4 ring-indigo-500 ring-inset z-10' : ''}`} onClick={onClick}>
                     {/* 圖片層 */}
                     {cell.image ? (
                         <div className="absolute inset-0 w-full h-full flex items-center justify-center">
-                            <img 
-                                src={cell.image} 
-                                alt={`Cell ${idx}`} 
-                                className="max-w-none origin-center"
-                                style={{ 
-                                    width: '100%', 
-                                    height: '100%',
-                                    objectFit: 'cover',
-                                    transform: `translate(${cell.x}%, ${cell.y}%) scale(${cell.scale}) rotate(${cell.rotate}deg)`
-                                }} 
-                            />
+                            <img src={cell.image} alt={`Cell ${idx}`} className="origin-center" style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', display: 'block', transform: `translate(${cell.x}%, ${cell.y}%) scale(${cell.scale}) rotate(${cell.rotate}deg)` }} />
                         </div>
                     ) : (
                         <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 bg-slate-100 group-hover:bg-slate-200 transition">
-                            <i className="fas fa-image text-3xl opacity-50 mb-2"></i>
-                            <span className="text-sm font-medium">點擊設定圖片</span>
+                            <i className="fas fa-image text-3xl opacity-50 mb-2"></i><span className="text-sm font-medium mt-2">點擊設定圖片</span>
                         </div>
                     )}
 
                     {/* 文字層 */}
                     {(cell.text || cell.zhuyin) && (
-                        <div 
-                            className="absolute flex items-end justify-center pointer-events-none"
-                            style={{ 
-                                bottom: '8px', 
-                                left: 0, 
-                                right: 0
-                            }}
-                        >
-                            {/* 【核心修正】利用 margin 來取代 transform translate 進行位移 */}
-                            <div 
-                                className="bg-white/85 backdrop-blur-sm rounded-full shadow-sm border border-white/50 flex items-center justify-center"
-                                style={{ 
-                                    padding: `${finalPaddingY}px ${finalPaddingX}px`,
-                                    marginLeft: `${cell.textX}px`, 
-                                    marginBottom: `${-cell.textY}px` // 負向 margin-bottom 等同於向下 translate
-                                }}
-                            >
+                        <div className="absolute pointer-events-none flex justify-center items-end" style={{ bottom: '8px', left: 0, right: 0 }}>
+                            <div className="flex items-center justify-center" style={{ position: 'relative', left: `${cell.textX}px`, top: `${cell.textY}px` }}>
                                 {config.zhuyin && cell.zhuyin ? (
-                                    <ruby className="font-bold tracking-wide" style={{ fontSize: `${finalFontSize}px`, letterSpacing: `${cell.textLetterSpacing}px`, color: cell.textColor }}>
-                                        {cell.text}
-                                        <rt className="text-slate-600 font-normal select-none" style={{ letterSpacing: '0px', fontSize: `${finalFontSize * 0.45}px` }}>{cell.zhuyin}</rt>
-                                    </ruby>
+                                    <div className="flex flex-col items-center justify-center">
+                                        <div style={{ marginBottom: '2px' }}>
+                                            <StrokeText text={cell.zhuyin} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth * 0.6} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize * 0.45} letterSpacing={0} />
+                                        </div>
+                                        <div>
+                                            <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={cell.textLetterSpacing} />
+                                        </div>
+                                    </div>
                                 ) : (
-                                    <span className="font-bold tracking-wide" style={{ fontSize: `${finalFontSize}px`, letterSpacing: `${cell.textLetterSpacing}px`, color: cell.textColor }}>
-                                        {cell.text}
-                                    </span>
+                                    <div>
+                                        <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={cell.textLetterSpacing} />
+                                    </div>
                                 )}
                             </div>
                         </div>
                     )}
 
                     {/* 點讀筆圓圈定位區 */}
-                    <div 
-                        className="absolute rounded-full border border-slate-400 bg-white/40 shadow-sm backdrop-blur-sm pointer-events-none"
-                        style={{ 
-                            width: circleSize, 
-                            borderWidth: 'max(1px, 0.3mm)',
-                            /* 【核心修正】利用 top 與 right 加上 calc 來取代 translate，避免位移錯誤 */
-                            top: `calc(8px + ${cell.circleY}px)`,
-                            right: `calc(8px - ${cell.circleX}px)`
-                        }}
-                    >
-                        {/* 【核心修正】利用 padding-bottom 技巧取代容易出錯的 aspect-ratio，強制畫出完美正圓 */}
+                    <div className="absolute rounded-full border border-slate-400 bg-white/40 shadow-sm backdrop-blur-sm pointer-events-none" style={{ width: circleSize, borderWidth: 'max(1px, 0.3mm)', top: `${15 + cell.circleY}px`, right: `${15 - cell.circleX}px` }}>
                         <div style={{ paddingBottom: '100%' }}></div>
                     </div>
                 </div>
             );
         }
 
-        // --- 滑桿輔助組件 ---
         function SliderControl({ icon, label, min, max, step, value, onChange }) {
             return (
                 <div>
-                    <div className="flex justify-between text-xs text-slate-400 mb-1">
-                        <span className="flex items-center gap-1">{icon} {label}</span>
-                        <span className="font-mono">{value}</span>
-                    </div>
-                    <input 
-                        type="range" 
-                        min={min} max={max} step={step} 
-                        value={value} 
-                        onChange={(e) => onChange(parseFloat(e.target.value))}
-                        className="w-full accent-indigo-500 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer"
-                    />
+                    <div className="flex justify-between text-xs text-slate-400 mb-1"><span className="flex items-center gap-1">{icon} {label}</span><span className="font-mono">{value}</span></div>
+                    <input type="range" min={min} max={max} step={step} value={value} onChange={(e) => onChange(parseFloat(e.target.value))} className="w-full accent-indigo-500 h-1.5 bg-slate-700 rounded-lg appearance-none cursor-pointer" />
                 </div>
             );
         }
