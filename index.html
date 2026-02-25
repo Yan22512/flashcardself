@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>點讀小卡製作工具 v1.1</title>
+    <title>點讀小卡製作工具 v1.2</title>
     
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -46,31 +46,53 @@
             document.head.appendChild(script);
         });
 
-        // --- 文字描邊專用組件 (解決匯出套件無法完美呈現外描邊的問題) ---
+        // --- 文字描邊專用組件 ---
         const StrokeText = ({ text, color, strokeColor, strokeWidth, strokeOpacity, fontSize, letterSpacing }) => {
-            const strokeColorRgba = useMemo(() => {
+            const textShadow = useMemo(() => {
+                if (strokeWidth <= 0) return 'none';
                 let hex = strokeColor || '#ffffff';
                 hex = hex.replace('#', '');
                 if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
                 const r = parseInt(hex.substring(0, 2), 16) || 255;
                 const g = parseInt(hex.substring(2, 4), 16) || 255;
                 const b = parseInt(hex.substring(4, 6), 16) || 255;
-                return `rgba(${r}, ${g}, ${b}, ${strokeOpacity / 100})`;
-            }, [strokeColor, strokeOpacity]);
+                const rgba = `rgba(${r}, ${g}, ${b}, ${strokeOpacity / 100})`;
+
+                // 利用 16 方向陰影疊加，完美模擬無死角的文字描邊
+                const steps = 16;
+                let shadows = [];
+                for (let i = 0; i < steps; i++) {
+                    const angle = (i * 2 * Math.PI) / steps;
+                    const x = (strokeWidth * Math.cos(angle)).toFixed(1);
+                    const y = (strokeWidth * Math.sin(angle)).toFixed(1);
+                    shadows.push(`${x}px ${y}px 0px ${rgba}`);
+                }
+                // 較粗的描邊補上內圈
+                if (strokeWidth > 2) {
+                    const innerWidth = strokeWidth / 2;
+                    for (let i = 0; i < steps; i++) {
+                        const angle = (i * 2 * Math.PI) / steps;
+                        const x = (innerWidth * Math.cos(angle)).toFixed(1);
+                        const y = (innerWidth * Math.sin(angle)).toFixed(1);
+                        shadows.push(`${x}px ${y}px 0px ${rgba}`);
+                    }
+                }
+                return shadows.join(', ');
+            }, [strokeColor, strokeWidth, strokeOpacity]);
 
             if (!text) return null;
             
-            // 使用絕對的像素級行高，確保轉檔時不誤判
+            // 使用絕對的像素級行高
             const fixedLineHeight = `${fontSize * 1.2}px`;
 
             return (
                 <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {/* 底層：描邊層 (置中疊加) */}
+                    {/* 底層：描邊層 */}
                     {strokeWidth > 0 && (
                         <div className="font-bold" style={{
                             position: 'absolute',
                             WebkitTextStroke: `${strokeWidth}px ${strokeColorRgba}`,
-                            color: strokeColorRgba, // 內部填滿描邊色防漏光
+                            color: strokeColorRgba, 
                             zIndex: 1, whiteSpace: 'nowrap',
                             fontSize: `${fontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight
                         }}>
@@ -81,7 +103,8 @@
                     <div className="font-bold" style={{
                         position: 'relative', color: color,
                         zIndex: 2, whiteSpace: 'nowrap',
-                        fontSize: `${fontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight
+                        fontSize: `${fontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight,
+                        textShadow: textShadow // 在頂層也加上 shadow 防止匯出時消失
                     }}>
                         {text}
                     </div>
@@ -93,7 +116,8 @@
         const DEFAULT_CELL = {
             image: null, scale: 1, x: 0, y: 0, rotate: 0,
             text: '', zhuyin: '',
-            textFontSize: 24, textLetterSpacing: 0, textColor: '#1e293b',
+            textFontSize: 61, // 預設 61px，在 800px(10.5cm) 畫布下約等於 0.8cm 高
+            textLetterSpacing: 0, textColor: '#1e293b',
             textStrokeColor: '#ffffff', textStrokeWidth: 4, textStrokeOpacity: 100,     
             textX: 0, textY: 0, circleX: 0, circleY: 0
         };
@@ -109,7 +133,6 @@
         ];
 
         function App() {
-            // --- 狀態管理 ---
             const [step, setStep] = useState(1); 
             const [config, setConfig] = useState({
                 template: 'T1', border: 'square', zhuyin: false,
@@ -118,15 +141,14 @@
             const [titleData, setTitleData] = useState({ ...DEFAULT_TITLE });
             const [cells, setCells] = useState(Array(4).fill(null).map(() => ({ ...DEFAULT_CELL })));
             
-            // UI 狀態
-            const getInitialZoom = () => (typeof window !== 'undefined' && window.innerWidth < 768) ? 0.45 : 1;
+            const isMobile = typeof window !== 'undefined' && window.innerWidth < 768;
+            const getInitialZoom = () => isMobile ? 0.45 : 1;
             const [activeElement, setActiveElement] = useState(null);
             const [isExporting, setIsExporting] = useState(false);
             const [zoom, setZoom] = useState(getInitialZoom());
 
             useEffect(() => { if (step === 1) setZoom(getInitialZoom()); }, [step]);
 
-            // --- 狀態更新 Helper ---
             const updateCell = (index, key, value) => {
                 setCells(prev => {
                     const newCells = [...prev];
@@ -139,7 +161,6 @@
                 setTitleData(prev => ({ ...prev, [key]: value }));
             };
 
-            // 優化：處理圖片上傳並清理舊的 Blob URL 避免記憶體洩漏
             const handleImageUpload = (e, callback, oldUrl = null) => {
                 const file = e.target.files[0];
                 if (file) {
@@ -149,16 +170,36 @@
                 e.target.value = ''; 
             };
 
-            // --- 匯出檔案 (PDF 或 JPG) ---
+            const downloadBlob = (base64Url, filename) => {
+                const arr = base64Url.split(',');
+                const mime = arr[0].match(/:(.*?);/)[1];
+                const bstr = atob(arr[1]);
+                let n = bstr.length;
+                const u8arr = new Uint8Array(n);
+                while (n--) {
+                    u8arr[n] = bstr.charCodeAt(n);
+                }
+                const blob = new Blob([u8arr], { type: mime });
+                const blobUrl = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.style.display = 'none';
+                a.href = blobUrl;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(() => {
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(blobUrl);
+                }, 100);
+            };
+
+            // --- 匯出檔案 ---
             const handleExport = async () => {
                 setIsExporting(true);
                 setActiveElement(null); 
                 
-                // 暫存目前的縮放比例，並將畫布強制恢復為 100% (zoom=1) 以避免轉檔引擎誤判
                 const currentZoom = zoom;
                 setZoom(1);
-
-                // 等待 React 重新渲染畫布至 1:1 尺寸與取消選取狀態
                 await new Promise(r => setTimeout(r, 300)); 
 
                 try {
@@ -169,24 +210,18 @@
                     const baseCanvasWidth = isT1 ? 800 : 600;
                     const baseCanvasHeight = isT1 ? 800 * (7.5 / 10.5) : 600 * (10.5 / 7.5);
                     
-                    // html-to-image 採用原生 SVG 技術，所見即所得，保證不跑位
+                    const exportRatio = isMobile ? 2 : 4;
+
                     const dataUrl = await window.htmlToImage.toJpeg(element, { 
-                        pixelRatio: 4, // 高畫質匯出
+                        pixelRatio: exportRatio, 
                         backgroundColor: '#ffffff',
                         width: baseCanvasWidth,
                         height: baseCanvasHeight,
-                        style: {
-                            transform: 'none',
-                            transformOrigin: 'top left',
-                            margin: '0'
-                        }
+                        style: { transform: 'none', transformOrigin: 'top left', margin: '0' }
                     });
 
                     if (config.exportFormat === 'jpg') {
-                        const a = document.createElement('a');
-                        a.href = dataUrl;
-                        a.download = `點讀小卡_${new Date().getTime()}.jpg`;
-                        a.click();
+                        downloadBlob(dataUrl, `點讀小卡_${new Date().getTime()}.jpg`);
                     } else if (config.exportFormat === 'pdf') {
                         await loadScript('https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js');
 
@@ -210,7 +245,6 @@
                             format: [pdfWidth, pdfHeight]
                         });
 
-                        // 【修復變形 Bug】: 計算置中與等比例縮放，確保 A6/4x6 輸出時圓形不變形
                         const canvasRatio = baseCanvasWidth / baseCanvasHeight;
                         const paperRatio = pdfWidth / pdfHeight;
                         let printW = pdfWidth;
@@ -234,7 +268,6 @@
                     console.error('匯出失敗:', error);
                     alert('檔案匯出失敗，請稍後再試。');
                 } finally {
-                    // 匯出完畢後，安全地將畫面縮放比例恢復原狀
                     setZoom(currentZoom);
                     setIsExporting(false);
                 }
@@ -260,7 +293,7 @@
                                                 onClick={() => {
                                                     setConfig({...config, template: t.id});
                                                     setCells(Array(t.id === 'T1' ? 4 : 3).fill(null).map(() => ({ ...DEFAULT_CELL })));
-                                                    setActiveElement(null); // 修復 Bug：切換模板時清空選取狀態防閃退
+                                                    setActiveElement(null); 
                                                 }}
                                                 className={`border-2 rounded-xl p-4 cursor-pointer transition-all ${config.template === t.id ? 'border-indigo-500 bg-indigo-50/50' : 'border-slate-200 hover:border-indigo-300'}`}
                                             >
@@ -354,7 +387,6 @@
             const activeCellIndex = isCellActive ? activeElement.index : -1;
             const activeCellData = isCellActive ? cells[activeCellIndex] : null;
 
-            // 模組化：渲染單元格區塊
             const CellsBlock = (
                 <div className={`w-full h-full grid ${isT1 ? 'grid-cols-2 grid-rows-2' : 'grid-cols-1 grid-rows-3'}`} style={{ [isT1 ? 'width' : 'height']: '90.476%' }}>
                     {cells.map((cell, idx) => (
@@ -364,12 +396,12 @@
                             onClick={() => setActiveElement({ type: 'cell', index: idx })}
                             config={config} innerBorder={innerBorderClass}
                             circleSize={isT1 ? "25.26%" : "16%"}
+                            isT1={isT1} // 傳入模板狀態以利文字寬度計算
                         />
                     ))}
                 </div>
             );
 
-            // 模組化：渲染標題區塊
             const TitleBlock = (
                 <div 
                     className={`relative cursor-pointer overflow-hidden flex items-center justify-center ${innerBorderClass} ${activeElement?.type === 'title' && !isExporting ? 'ring-4 ring-indigo-500 ring-inset z-10' : ''}`}
@@ -395,7 +427,6 @@
 
             return (
                 <div className="h-screen flex flex-col bg-slate-800 text-slate-100 font-sans overflow-hidden">
-                    {/* 頂部工具列 */}
                     <header className="h-16 shrink-0 bg-slate-900 flex items-center justify-between px-3 md:px-6 shadow-md z-20">
                         <button onClick={() => { setStep(1); setActiveElement(null); }} className="flex items-center gap-2 text-slate-300 hover:text-white transition text-sm md:text-base">
                             <i className="fas fa-arrow-left"></i> <span className="hidden sm:inline">重新設定</span>
@@ -413,9 +444,7 @@
                         </div>
                     </header>
 
-                    {/* 主要編輯區塊 */}
                     <div className="flex-1 flex flex-col md:flex-row overflow-hidden min-h-0">
-                        {/* 畫布區 */}
                         <div className="flex-1 bg-slate-950 overflow-auto p-4 md:p-8 relative" onClick={() => setActiveElement(null)}>
                             <div style={{ width: `${baseCanvasWidth * zoom}px`, height: `${baseCanvasHeight * zoom}px`, margin: '0 auto', position: 'relative' }}>
                                 <div style={{ 
@@ -446,15 +475,14 @@
                                     </div>
                                 )}
 
-                                {/* 標題編輯面板 */}
                                 {activeElement?.type === 'title' && (
                                     <div className="space-y-4 md:space-y-6">
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                                             <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2"><i className="fas fa-font"></i> 標題文字設定</label>
-                                            <input type="text" maxLength={20} className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-indigo-500 focus:outline-none mb-4" value={titleData.text} onChange={(e) => updateTitle('text', e.target.value)} placeholder="輸入標題..." />
+                                            <input type="text" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-indigo-500 focus:outline-none mb-4" value={titleData.text} onChange={(e) => updateTitle('text', e.target.value)} placeholder="輸入標題..." />
                                             <div className="space-y-4">
-                                                <SliderControl icon={<i className="fas fa-text-height"></i>} label="字體大小" min="10" max="60" step="1" value={titleData.fontSize} onChange={(v) => updateTitle('fontSize', v)} />
-                                                <SliderControl icon={<i className="fas fa-arrows-alt-h"></i>} label="字元間距" min="-5" max="30" step="1" value={titleData.letterSpacing} onChange={(v) => updateTitle('letterSpacing', v)} />
+                                                <SliderControl icon={<i className="fas fa-text-height"></i>} label="字體大小" min="10" max="150" step="1" value={titleData.fontSize} onChange={(v) => updateTitle('fontSize', v)} />
+                                                <SliderControl icon={<i className="fas fa-arrows-alt-h"></i>} label="字元間距" min="-5" max="50" step="1" value={titleData.letterSpacing} onChange={(v) => updateTitle('letterSpacing', v)} />
                                                 <div className="grid grid-cols-2 gap-4">
                                                     <div><label className="block text-xs text-slate-400 mb-1">文字顏色</label><input type="color" className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent" value={titleData.color} onChange={(e) => updateTitle('color', e.target.value)} /></div>
                                                     <div><label className="block text-xs text-slate-400 mb-1">背景底色</label><input type="color" className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent" value={titleData.bgColor} onChange={(e) => updateTitle('bgColor', e.target.value)} /></div>
@@ -475,7 +503,6 @@
                                     </div>
                                 )}
 
-                                {/* 單元格編輯面板 */}
                                 {isCellActive && (
                                     <div className="space-y-4 md:space-y-6">
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
@@ -500,7 +527,7 @@
 
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                                             <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2"><i className="fas fa-font"></i> 單元文字與描邊設定</label>
-                                            <input type="text" maxLength={10} className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-emerald-500 focus:outline-none mb-2" value={activeCellData.text} onChange={(e) => updateCell(activeCellIndex, 'text', e.target.value)} placeholder="輸入文字 (最多10字)" />
+                                            <input type="text" className="w-full bg-slate-900 border border-slate-600 rounded p-3 text-white focus:border-emerald-500 focus:outline-none mb-2" value={activeCellData.text} onChange={(e) => updateCell(activeCellIndex, 'text', e.target.value)} placeholder="輸入文字 (無字數上限)" />
                                             {config.zhuyin && <input type="text" className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-emerald-500 focus:outline-none text-sm" value={activeCellData.zhuyin} onChange={(e) => updateCell(activeCellIndex, 'zhuyin', e.target.value)} placeholder="例：ㄉㄧㄢˇ ㄉㄨˊ" />}
                                             <div className="space-y-4 pt-4 border-t border-slate-700 mt-4">
                                                 <div className="grid grid-cols-2 gap-4">
@@ -509,8 +536,8 @@
                                                 </div>
                                                 <SliderControl icon={<i className="fas fa-border-all"></i>} label="描邊粗細" min="0" max="20" step="1" value={activeCellData.textStrokeWidth} onChange={(v) => updateCell(activeCellIndex, 'textStrokeWidth', v)} />
                                                 <SliderControl icon={<i className="fas fa-eye"></i>} label="描邊不透明度 (%)" min="0" max="100" step="1" value={activeCellData.textStrokeOpacity} onChange={(v) => updateCell(activeCellIndex, 'textStrokeOpacity', v)} />
-                                                <SliderControl icon={<i className="fas fa-text-height"></i>} label="字體大小" min="10" max="50" step="1" value={activeCellData.textFontSize} onChange={(v) => updateCell(activeCellIndex, 'textFontSize', v)} />
-                                                <SliderControl icon={<i className="fas fa-expand-arrows-alt"></i>} label="字元間距" min="-5" max="20" step="1" value={activeCellData.textLetterSpacing} onChange={(v) => updateCell(activeCellIndex, 'textLetterSpacing', v)} />
+                                                <SliderControl icon={<i className="fas fa-text-height"></i>} label="字體大小 (預設約0.8cm高)" min="10" max="200" step="1" value={activeCellData.textFontSize} onChange={(v) => updateCell(activeCellIndex, 'textFontSize', v)} />
+                                                <SliderControl icon={<i className="fas fa-expand-arrows-alt"></i>} label="字元間距" min="-5" max="50" step="1" value={activeCellData.textLetterSpacing} onChange={(v) => updateCell(activeCellIndex, 'textLetterSpacing', v)} />
                                                 <div className="pt-2">
                                                     <div className="text-xs text-indigo-400 font-medium mb-2 border-b border-indigo-900 pb-1"><i className="fas fa-arrows-alt mr-1"></i> 文字位置微調</div>
                                                     <div className="space-y-4">
@@ -537,15 +564,37 @@
             );
         }
 
-        function CellRenderer({ cell, idx, isActive, onClick, config, innerBorder, circleSize }) {
-            let textScale = 1;
-            const len = cell.text.length;
-            if (len > 8) textScale = 0.6;
-            else if (len > 5) textScale = 0.8;
-            else if (len > 3) textScale = 0.9;
-            if (config.zhuyin) textScale *= 0.85; 
+        // --- 核心：單元格渲染與「智慧字串寬度估算防爆框」技術 ---
+        function CellRenderer({ cell, idx, isActive, onClick, config, innerBorder, circleSize, isT1 }) {
+            const finalFontSize = cell.textFontSize;
+            
+            // 1. 計算當前模板下，單元格的最大安全寬度 (保留左右各約 20px 的安全距離)
+            const MAX_WIDTH = isT1 ? 320 : 560;
+            
+            // 2. 智慧估算當前輸入字串的實際渲染寬度
+            let estWidth = 0;
+            const text = cell.text || '';
+            for (let char of text) {
+                // 若為英數字元(ASCII)，寬度約為全寬的 0.6 倍，中文字則算全寬
+                if (char.charCodeAt(0) < 256) {
+                    estWidth += finalFontSize * 0.6;
+                } else {
+                    estWidth += finalFontSize;
+                }
+            }
+            // 加上字距的總寬度
+            if (text.length > 1) {
+                estWidth += (text.length - 1) * cell.textLetterSpacing;
+            }
+            // 加上描邊的粗細 (左右兩側)，避免描邊被切掉
+            estWidth += cell.textStrokeWidth * 2;
 
-            const finalFontSize = cell.textFontSize * textScale;
+            // 3. 計算自動防爆框的縮放比例 (Scale)
+            // 如果估算寬度大於最大安全寬度，就等比例縮小；否則維持 1 倍
+            let autoScale = 1;
+            if (estWidth > MAX_WIDTH && estWidth > 0) {
+                autoScale = MAX_WIDTH / estWidth;
+            }
 
             return (
                 <div className={`relative overflow-hidden cursor-pointer group bg-white/50 ${innerBorder} ${isActive ? 'ring-4 ring-indigo-500 ring-inset z-10' : ''}`} onClick={onClick}>
@@ -564,20 +613,23 @@
                     {(cell.text || cell.zhuyin) && (
                         <div className="absolute pointer-events-none flex justify-center items-end" style={{ bottom: '8px', left: 0, right: 0 }}>
                             <div className="flex items-center justify-center" style={{ position: 'relative', left: `${cell.textX}px`, top: `${cell.textY}px` }}>
-                                {config.zhuyin && cell.zhuyin ? (
-                                    <div className="flex flex-col items-center justify-center">
-                                        <div style={{ marginBottom: '2px' }}>
-                                            <StrokeText text={cell.zhuyin} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth * 0.6} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize * 0.45} letterSpacing={0} />
+                                {/* 將自動計算出的 autoScale 套用在外層，確保整體（包含注音、字距、描邊）等比縮放 */}
+                                <div style={{ transform: `scale(${autoScale})`, transformOrigin: 'center bottom' }}>
+                                    {config.zhuyin && cell.zhuyin ? (
+                                        <div className="flex flex-col items-center justify-center">
+                                            <div style={{ marginBottom: '2px' }}>
+                                                <StrokeText text={cell.zhuyin} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth * 0.6} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize * 0.45} letterSpacing={0} />
+                                            </div>
+                                            <div>
+                                                <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={cell.textLetterSpacing} />
+                                            </div>
                                         </div>
+                                    ) : (
                                         <div>
                                             <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={cell.textLetterSpacing} />
                                         </div>
-                                    </div>
-                                ) : (
-                                    <div>
-                                        <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={cell.textLetterSpacing} />
-                                    </div>
-                                )}
+                                    )}
+                                </div>
                             </div>
                         </div>
                     )}
@@ -604,4 +656,3 @@
     </script>
 </body>
 </html>
-
