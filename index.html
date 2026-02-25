@@ -50,13 +50,23 @@
             y: 0,
             rotate: 0,
             text: '',
-            zhuyin: ''
+            zhuyin: '',
+            textFontSize: 24,
+            textLetterSpacing: 0,
+            textColor: '#1e293b',
+            textX: 0,
+            textY: 0,
+            circleX: 0,
+            circleY: 0
         };
 
         const DEFAULT_TITLE = {
             text: '自訂標題',
             bgColor: '#ffffff',
-            bgImage: null
+            bgImage: null,
+            fontSize: 24,
+            letterSpacing: 4,
+            color: '#000000'
         };
 
         const TEMPLATES = [
@@ -74,6 +84,7 @@
                 border: 'square', // square, rounded, none
                 zhuyin: false,
                 outputSize: 'card', // card, a6, 3x5, 4x6
+                exportFormat: 'pdf', // pdf, jpg
                 bgImage: null
             });
 
@@ -96,7 +107,7 @@
                 }
             };
 
-            // --- 匯出圖片 ---
+            // --- 匯出檔案 (PDF 或 JPG) ---
             const handleExport = async () => {
                 setIsExporting(true);
                 setActiveElement(null); // 隱藏選取框
@@ -105,6 +116,7 @@
                 await new Promise(r => setTimeout(r, 100));
 
                 try {
+                    // 1. 確保 html2canvas 載入
                     if (!window.html2canvas) {
                         await new Promise((resolve, reject) => {
                             const script = document.createElement('script');
@@ -115,6 +127,7 @@
                         });
                     }
 
+                    // 2. 將畫面轉為高畫質 Canvas
                     const element = document.getElementById('card-export-target');
                     const canvas = await window.html2canvas(element, {
                         scale: 4, // 提高匯出畫質
@@ -122,14 +135,54 @@
                         backgroundColor: null
                     });
 
-                    const url = canvas.toDataURL('image/png');
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `點讀小卡_${new Date().getTime()}.png`;
-                    a.click();
+                    if (config.exportFormat === 'jpg') {
+                        // 匯出 JPG
+                        const url = canvas.toDataURL('image/jpeg', 1.0);
+                        const a = document.createElement('a');
+                        a.href = url;
+                        a.download = `點讀小卡_${new Date().getTime()}.jpg`;
+                        a.click();
+                    } else if (config.exportFormat === 'pdf') {
+                        // 匯出 PDF
+                        if (!window.jspdf) {
+                            await new Promise((resolve, reject) => {
+                                const script = document.createElement('script');
+                                script.src = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+                                script.onload = resolve;
+                                script.onerror = reject;
+                                document.head.appendChild(script);
+                            });
+                        }
+
+                        // 根據選擇尺寸決定 PDF 實體長寬 (單位: mm)
+                        let pdfWidth = config.template === 'T1' ? 105 : 75;
+                        let pdfHeight = config.template === 'T1' ? 75 : 105;
+                        
+                        if (config.outputSize === 'a6') {
+                            pdfWidth = config.template === 'T1' ? 148 : 105;
+                            pdfHeight = config.template === 'T1' ? 105 : 148;
+                        } else if (config.outputSize === '3x5') {
+                            pdfWidth = config.template === 'T1' ? 127 : 76.2;
+                            pdfHeight = config.template === 'T1' ? 76.2 : 127;
+                        } else if (config.outputSize === '4x6') {
+                            pdfWidth = config.template === 'T1' ? 152.4 : 101.6;
+                            pdfHeight = config.template === 'T1' ? 101.6 : 152.4;
+                        }
+
+                        const pdf = new window.jspdf.jsPDF({
+                            orientation: config.template === 'T1' ? 'landscape' : 'portrait',
+                            unit: 'mm',
+                            format: [pdfWidth, pdfHeight]
+                        });
+
+                        const imgData = canvas.toDataURL('image/jpeg', 1.0);
+                        pdf.addImage(imgData, 'JPEG', 0, 0, pdfWidth, pdfHeight);
+                        pdf.save(`點讀小卡_${new Date().getTime()}.pdf`);
+                    }
+
                 } catch (error) {
                     console.error('匯出失敗:', error);
-                    alert('圖檔匯出失敗，請稍後再試。');
+                    alert('檔案匯出失敗，請稍後再試。');
                 } finally {
                     setIsExporting(false);
                 }
@@ -203,9 +256,24 @@
                                     </div>
                                 </div>
 
+                                {/* 輸出檔案類型 */}
+                                <div>
+                                    <label className="block text-sm font-semibold mb-2">4. 輸出檔案類型</label>
+                                    <div className="flex gap-4">
+                                        <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-200 transition">
+                                            <input type="radio" name="exportFormat" checked={config.exportFormat === 'pdf'} onChange={() => setConfig({...config, exportFormat: 'pdf'})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
+                                            <span className="font-medium text-slate-700">PDF 文件</span>
+                                        </label>
+                                        <label className="flex items-center gap-2 cursor-pointer bg-slate-100 px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-200 transition">
+                                            <input type="radio" name="exportFormat" checked={config.exportFormat === 'jpg'} onChange={() => setConfig({...config, exportFormat: 'jpg'})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
+                                            <span className="font-medium text-slate-700">JPG 圖檔</span>
+                                        </label>
+                                    </div>
+                                </div>
+
                                 {/* 注音選項 */}
                                 <div>
-                                    <label className="block text-sm font-semibold mb-2">4. 文字注音功能</label>
+                                    <label className="block text-sm font-semibold mb-2">5. 文字注音功能</label>
                                     <div className="flex gap-4">
                                         <label className="flex items-center gap-2 cursor-pointer">
                                             <input type="radio" name="zhuyin" checked={!config.zhuyin} onChange={() => setConfig({...config, zhuyin: false})} className="text-indigo-600 focus:ring-indigo-500 w-5 h-5"/>
@@ -220,7 +288,7 @@
 
                                 {/* 背景圖片上傳 */}
                                 <div>
-                                    <label className="block text-sm font-semibold mb-2">5. 全局背景底圖 (選填)</label>
+                                    <label className="block text-sm font-semibold mb-2">6. 全局背景底圖 (選填)</label>
                                     <div className="flex items-center gap-4">
                                         <label className="flex items-center justify-center px-4 py-2 bg-slate-100 border border-slate-300 rounded-lg cursor-pointer hover:bg-slate-200 transition text-sm">
                                             <i className="fas fa-upload mr-2"></i>
@@ -285,7 +353,7 @@
                                 className="bg-emerald-600 hover:bg-emerald-500 text-white px-5 py-2 rounded-lg font-semibold flex items-center gap-2 transition disabled:opacity-50"
                             >
                                 <i className="fas fa-download"></i>
-                                {isExporting ? '匯出中...' : '匯出圖檔'}
+                                {isExporting ? '匯出中...' : `匯出 ${config.exportFormat.toUpperCase()}`}
                             </button>
                         </div>
                     </header>
@@ -326,6 +394,7 @@
                                                         config={config}
                                                         innerBorder={getInnerBorderClass()}
                                                         circleSize="25.26%"
+                                                        isT1={isT1}
                                                     />
                                                 ))}
                                             </div>
@@ -337,7 +406,13 @@
                                             >
                                                 {titleData.bgImage && <img src={titleData.bgImage} className="absolute inset-0 w-full h-full object-cover" alt="Title BG" />}
                                                 <div className="absolute inset-0 flex items-center justify-center">
-                                                    <div className="text-black font-bold whitespace-pre-wrap text-center" style={{ writingMode: 'vertical-rl', textOrientation: 'upright', letterSpacing: '4px', fontSize: '24px' }}>
+                                                    <div className="font-bold whitespace-pre-wrap text-center" style={{ 
+                                                        writingMode: 'vertical-rl', 
+                                                        textOrientation: 'upright', 
+                                                        letterSpacing: `${titleData.letterSpacing}px`, 
+                                                        fontSize: `${titleData.fontSize}px`,
+                                                        color: titleData.color
+                                                    }}>
                                                         {titleData.text || '標題區域'}
                                                     </div>
                                                 </div>
@@ -356,7 +431,12 @@
                                             >
                                                 {titleData.bgImage && <img src={titleData.bgImage} className="absolute inset-0 w-full h-full object-cover" alt="Title BG" />}
                                                 <div className="absolute inset-0 flex items-center justify-center">
-                                                    <div className="text-black font-bold whitespace-pre-wrap text-center text-2xl tracking-widest">
+                                                    <div className="font-bold whitespace-pre-wrap text-center" style={{ 
+                                                        writingMode: 'horizontal-tb',
+                                                        letterSpacing: `${titleData.letterSpacing}px`, 
+                                                        fontSize: `${titleData.fontSize}px`,
+                                                        color: titleData.color
+                                                    }}>
                                                         {titleData.text || '標題區域'}
                                                     </div>
                                                 </div>
@@ -373,6 +453,7 @@
                                                         config={config}
                                                         innerBorder={getInnerBorderClass()}
                                                         circleSize="16%"
+                                                        isT1={isT1}
                                                     />
                                                 ))}
                                             </div>
@@ -403,34 +484,62 @@
                                 {/* 編輯標題區塊 */}
                                 {activeElement?.type === 'title' && (
                                     <div className="space-y-6">
-                                        <div>
-                                            <label className="block text-sm font-semibold mb-2 text-slate-300">標題文字</label>
+                                        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                                            <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2">
+                                                <i className="fas fa-font"></i> 標題文字設定
+                                            </label>
                                             <input 
                                                 type="text" 
                                                 maxLength={20}
-                                                className="w-full bg-slate-800 border border-slate-600 rounded p-2 text-white focus:border-indigo-500 focus:outline-none"
+                                                className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-indigo-500 focus:outline-none mb-4"
                                                 value={titleData.text}
                                                 onChange={(e) => setTitleData({...titleData, text: e.target.value})}
                                                 placeholder="輸入標題..."
                                             />
+                                            <div className="space-y-4">
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-text-height"></i>} label="字體大小" 
+                                                    min="10" max="60" step="1" 
+                                                    value={titleData.fontSize} 
+                                                    onChange={(v) => setTitleData({...titleData, fontSize: v})} 
+                                                />
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-arrows-alt-h"></i>} label="字元間距" 
+                                                    min="-5" max="30" step="1" 
+                                                    value={titleData.letterSpacing} 
+                                                    onChange={(v) => setTitleData({...titleData, letterSpacing: v})} 
+                                                />
+                                                <div className="grid grid-cols-2 gap-4">
+                                                    <div>
+                                                        <label className="block text-xs text-slate-400 mb-1">文字顏色</label>
+                                                        <input 
+                                                            type="color" 
+                                                            className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent"
+                                                            value={titleData.color}
+                                                            onChange={(e) => setTitleData({...titleData, color: e.target.value})}
+                                                        />
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs text-slate-400 mb-1">背景底色</label>
+                                                        <input 
+                                                            type="color" 
+                                                            className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent"
+                                                            value={titleData.bgColor}
+                                                            onChange={(e) => setTitleData({...titleData, bgColor: e.target.value})}
+                                                        />
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
-                                        <div>
-                                            <label className="block text-sm font-semibold mb-2 text-slate-300">標題底色</label>
-                                            <input 
-                                                type="color" 
-                                                className="w-full h-10 rounded cursor-pointer border-none p-0 bg-transparent"
-                                                value={titleData.bgColor}
-                                                onChange={(e) => setTitleData({...titleData, bgColor: e.target.value})}
-                                            />
-                                        </div>
-                                        <div>
-                                            <label className="block text-sm font-semibold mb-2 text-slate-300">或上傳標題底圖</label>
-                                            <label className="flex items-center justify-center px-4 py-2 bg-slate-800 border border-slate-600 rounded-lg cursor-pointer hover:bg-slate-700 transition">
+
+                                        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                                            <label className="block text-sm font-semibold mb-2 text-slate-300">上傳標題底圖</label>
+                                            <label className="flex items-center justify-center px-4 py-2 bg-slate-700 border border-slate-600 rounded-lg cursor-pointer hover:bg-slate-600 transition">
                                                 <i className="fas fa-upload mr-2"></i> 上傳圖片
                                                 <input type="file" className="hidden" accept="image/*" onChange={(e) => handleImageUpload(e, (url) => setTitleData({...titleData, bgImage: url}))} />
                                             </label>
                                             {titleData.bgImage && (
-                                                <button onClick={() => setTitleData({...titleData, bgImage: null})} className="mt-2 text-red-400 text-sm hover:text-red-300">移除圖片</button>
+                                                <button onClick={() => setTitleData({...titleData, bgImage: null})} className="mt-2 text-red-400 text-sm hover:text-red-300 w-full text-center">移除圖片</button>
                                             )}
                                         </div>
                                     </div>
@@ -439,6 +548,7 @@
                                 {/* 編輯單元格 */}
                                 {activeElement?.type === 'cell' && (
                                     <div className="space-y-6">
+                                        {/* 圖片設定區塊 */}
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                                             <label className="block text-sm font-semibold mb-3 text-indigo-300 flex items-center gap-2">
                                                 <i className="fas fa-image"></i> 圖片設定
@@ -452,7 +562,6 @@
                                                 })} />
                                             </label>
 
-                                            {/* 圖片調整滑桿 */}
                                             <div className="space-y-4">
                                                 <SliderControl 
                                                     icon={<i className="fas fa-search-plus"></i>} label="縮放" 
@@ -481,9 +590,10 @@
                                             </div>
                                         </div>
 
+                                        {/* 文字設定區塊 */}
                                         <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
                                             <label className="block text-sm font-semibold mb-3 text-emerald-300 flex items-center gap-2">
-                                                <i className="fas fa-font"></i> 文字設定
+                                                <i className="fas fa-font"></i> 單元文字設定
                                             </label>
                                             <input 
                                                 type="text" 
@@ -493,10 +603,9 @@
                                                 onChange={(e) => { const n=[...cells]; n[activeElement.index].text=e.target.value; setCells(n); }}
                                                 placeholder="輸入文字 (最多10字)"
                                             />
-                                            
                                             {config.zhuyin && (
-                                                <div className="mt-4 pt-4 border-t border-slate-700">
-                                                    <label className="block text-xs text-slate-400 mb-2">注音 (選填)</label>
+                                                <div className="mb-4">
+                                                    <label className="block text-xs text-slate-400 mb-1">注音 (選填)</label>
                                                     <input 
                                                         type="text" 
                                                         className="w-full bg-slate-900 border border-slate-600 rounded p-2 text-white focus:border-emerald-500 focus:outline-none text-sm"
@@ -506,7 +615,65 @@
                                                     />
                                                 </div>
                                             )}
+
+                                            <div className="space-y-4 pt-4 border-t border-slate-700">
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-text-height"></i>} label="字體大小" 
+                                                    min="10" max="50" step="1" 
+                                                    value={cells[activeElement.index].textFontSize} 
+                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textFontSize=v; setCells(n); }} 
+                                                />
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-expand-arrows-alt"></i>} label="字元間距" 
+                                                    min="-5" max="20" step="1" 
+                                                    value={cells[activeElement.index].textLetterSpacing} 
+                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textLetterSpacing=v; setCells(n); }} 
+                                                />
+                                                <div>
+                                                    <label className="block text-xs text-slate-400 mb-1">文字顏色</label>
+                                                    <input 
+                                                        type="color" 
+                                                        className="w-full h-8 rounded cursor-pointer border-none p-0 bg-transparent"
+                                                        value={cells[activeElement.index].textColor}
+                                                        onChange={(e) => { const n=[...cells]; n[activeElement.index].textColor=e.target.value; setCells(n); }}
+                                                    />
+                                                </div>
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-arrows-alt-h"></i>} label="文字水平微調 (X)" 
+                                                    min="-150" max="150" step="2" 
+                                                    value={cells[activeElement.index].textX} 
+                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textX=v; setCells(n); }} 
+                                                />
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-arrows-alt-v"></i>} label="文字垂直微調 (Y)" 
+                                                    min="-150" max="150" step="2" 
+                                                    value={cells[activeElement.index].textY} 
+                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].textY=v; setCells(n); }} 
+                                                />
+                                            </div>
                                         </div>
+
+                                        {/* 圓框設定區塊 */}
+                                        <div className="bg-slate-800 p-4 rounded-xl border border-slate-700">
+                                            <label className="block text-sm font-semibold mb-3 text-amber-300 flex items-center gap-2">
+                                                <i className="fas fa-circle-notch"></i> 點讀圓框定位
+                                            </label>
+                                            <div className="space-y-4">
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-arrows-alt-h"></i>} label="圓框水平移動 (X)" 
+                                                    min="-200" max="200" step="2" 
+                                                    value={cells[activeElement.index].circleX} 
+                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].circleX=v; setCells(n); }} 
+                                                />
+                                                <SliderControl 
+                                                    icon={<i className="fas fa-arrows-alt-v"></i>} label="圓框垂直移動 (Y)" 
+                                                    min="-200" max="200" step="2" 
+                                                    value={cells[activeElement.index].circleY} 
+                                                    onChange={(v) => { const n=[...cells]; n[activeElement.index].circleY=v; setCells(n); }} 
+                                                />
+                                            </div>
+                                        </div>
+
                                     </div>
                                 )}
                             </div>
@@ -517,7 +684,8 @@
         }
 
         // --- 單元格渲染組件 ---
-        function CellRenderer({ cell, idx, isActive, onClick, config, innerBorder, circleSize }) {
+        function CellRenderer({ cell, idx, isActive, onClick, config, innerBorder, circleSize, isT1 }) {
+            // 動態縮小文字以防爆框 (保留原本的自動縮小保護機制，但以使用者選定的大小為基準)
             const len = cell.text.length;
             let textScale = 1;
             if (len > 8) textScale = 0.6;
@@ -555,18 +723,28 @@
 
                     {/* 文字層 */}
                     {(cell.text || cell.zhuyin) && (
-                        <div className="absolute bottom-2 left-0 right-0 flex justify-center pointer-events-none">
+                        <div 
+                            className="absolute flex justify-center pointer-events-none"
+                            style={{ 
+                                bottom: '8px', 
+                                left: 0, 
+                                right: 0,
+                                transform: `translate(${cell.textX}px, ${cell.textY}px)`
+                            }}
+                        >
                             <div 
-                                className="bg-white/85 backdrop-blur-sm px-4 py-1.5 rounded-full shadow-sm border border-white/50 text-slate-800 flex items-center"
+                                className="bg-white/85 backdrop-blur-sm px-4 py-1.5 rounded-full shadow-sm border border-white/50 flex items-center"
                                 style={{ transform: `scale(${textScale})`, transformOrigin: 'bottom center' }}
                             >
                                 {config.zhuyin && cell.zhuyin ? (
-                                    <ruby className="font-bold text-2xl tracking-wide">
+                                    <ruby className="font-bold tracking-wide" style={{ fontSize: `${cell.textFontSize}px`, letterSpacing: `${cell.textLetterSpacing}px`, color: cell.textColor }}>
                                         {cell.text}
-                                        <rt className="text-[0.45em] text-slate-600 font-normal select-none">{cell.zhuyin}</rt>
+                                        <rt className="text-[0.45em] text-slate-600 font-normal select-none" style={{ letterSpacing: '0px' }}>{cell.zhuyin}</rt>
                                     </ruby>
                                 ) : (
-                                    <span className="font-bold text-2xl tracking-wide">{cell.text}</span>
+                                    <span className="font-bold tracking-wide" style={{ fontSize: `${cell.textFontSize}px`, letterSpacing: `${cell.textLetterSpacing}px`, color: cell.textColor }}>
+                                        {cell.text}
+                                    </span>
                                 )}
                             </div>
                         </div>
@@ -575,7 +753,12 @@
                     {/* 點讀筆圓圈定位區 */}
                     <div 
                         className="absolute top-2 right-2 rounded-full border border-slate-400 bg-white/40 shadow-sm backdrop-blur-sm pointer-events-none"
-                        style={{ width: circleSize, aspectRatio: '1 / 1', borderWidth: 'max(1px, 0.3mm)' }}
+                        style={{ 
+                            width: circleSize, 
+                            aspectRatio: '1 / 1', 
+                            borderWidth: 'max(1px, 0.3mm)',
+                            transform: `translate(${cell.circleX}px, ${cell.circleY}px)`
+                        }}
                     />
                 </div>
             );
