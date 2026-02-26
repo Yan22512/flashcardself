@@ -46,65 +46,74 @@
             document.head.appendChild(script);
         });
 
-        // --- 文字描邊專用組件 (使用 text-shadow 解決 iOS/PDF 描邊消失 Bug) ---
+        // --- 文字描邊專用組件 (徹底修復白畫面 Bug) ---
         const StrokeText = ({ text, color, strokeColor, strokeWidth, strokeOpacity, fontSize, letterSpacing }) => {
-            const textShadow = useMemo(() => {
-                if (strokeWidth <= 0) return 'none';
+            // 確保數值型別正確，防止 NaN 導致渲染崩潰
+            const numStrokeWidth = Number(strokeWidth) || 0;
+            const numFontSize = Number(fontSize) || 16;
+            
+            // 獨立計算 RGBA 顏色，供描邊與陰影共用
+            const strokeColorRgba = useMemo(() => {
                 let hex = strokeColor || '#ffffff';
                 hex = hex.replace('#', '');
                 if (hex.length === 3) hex = hex.split('').map(c => c + c).join('');
                 const r = parseInt(hex.substring(0, 2), 16) || 255;
                 const g = parseInt(hex.substring(2, 4), 16) || 255;
                 const b = parseInt(hex.substring(4, 6), 16) || 255;
-                const rgba = `rgba(${r}, ${g}, ${b}, ${strokeOpacity / 100})`;
+                const opacity = !isNaN(Number(strokeOpacity)) ? Number(strokeOpacity) / 100 : 1;
+                return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+            }, [strokeColor, strokeOpacity]);
 
-                // 利用 16 方向陰影疊加，完美模擬無死角的文字描邊
+            // 利用 16 方向陰影疊加，完美模擬無死角的文字描邊 (解決 iOS/PDF 描邊消失 Bug)
+            const textShadow = useMemo(() => {
+                if (numStrokeWidth <= 0) return 'none';
+                
                 const steps = 16;
                 let shadows = [];
                 for (let i = 0; i < steps; i++) {
                     const angle = (i * 2 * Math.PI) / steps;
-                    const x = (strokeWidth * Math.cos(angle)).toFixed(1);
-                    const y = (strokeWidth * Math.sin(angle)).toFixed(1);
-                    shadows.push(`${x}px ${y}px 0px ${rgba}`);
+                    const x = (numStrokeWidth * Math.cos(angle)).toFixed(1);
+                    const y = (numStrokeWidth * Math.sin(angle)).toFixed(1);
+                    shadows.push(`${x}px ${y}px 0px ${strokeColorRgba}`);
                 }
                 // 較粗的描邊補上內圈，防止文字邊緣出現空隙
-                if (strokeWidth > 2) {
-                    const innerWidth = strokeWidth / 2;
+                if (numStrokeWidth > 2) {
+                    const innerWidth = numStrokeWidth / 2;
                     for (let i = 0; i < steps; i++) {
                         const angle = (i * 2 * Math.PI) / steps;
                         const x = (innerWidth * Math.cos(angle)).toFixed(1);
                         const y = (innerWidth * Math.sin(angle)).toFixed(1);
-                        shadows.push(`${x}px ${y}px 0px ${rgba}`);
+                        shadows.push(`${x}px ${y}px 0px ${strokeColorRgba}`);
                     }
                 }
                 return shadows.join(', ');
-            }, [strokeColor, strokeWidth, strokeOpacity]);
+            }, [numStrokeWidth, strokeColorRgba]);
 
             if (!text) return null;
             
             // 使用絕對的像素級行高防跑位
-            const fixedLineHeight = `${fontSize * 1.2}px`;
+            const fixedLineHeight = `${numFontSize * 1.2}px`;
 
             return (
                 <div style={{ position: 'relative', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                    {/* 底層：描邊層 */}
-                    {strokeWidth > 0 && (
+                    {/* 底層：原生 CSS 描邊層 (提供額外覆蓋保護) */}
+                    {numStrokeWidth > 0 && (
                         <div className="font-bold" style={{
                             position: 'absolute',
-                            WebkitTextStroke: `${strokeWidth}px ${strokeColorRgba}`,
+                            WebkitTextStroke: `${numStrokeWidth}px ${strokeColorRgba}`,
                             color: strokeColorRgba, 
                             zIndex: 1, whiteSpace: 'nowrap',
-                            fontSize: `${fontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight
+                            fontSize: `${numFontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight
                         }}>
                             {text}
                         </div>
                     )}
-                    {/* 頂層：文字填色層 */}
+                    {/* 頂層：文字填色與陰影疊加層 */}
                     <div className="font-bold" style={{
                         position: 'relative', color: color,
                         zIndex: 2, whiteSpace: 'nowrap',
-                        fontSize: `${fontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight,
-                        textShadow: textShadow // 在頂層也加上 shadow 防止匯出時消失
+                        fontSize: `${numFontSize}px`, letterSpacing: `${letterSpacing}px`, lineHeight: fixedLineHeight,
+                        textShadow: textShadow // 加上 shadow 防止匯出時描邊消失
                     }}>
                         {text}
                     </div>
@@ -396,7 +405,7 @@
                             onClick={() => setActiveElement({ type: 'cell', index: idx })}
                             config={config} innerBorder={innerBorderClass}
                             circleSize={isT1 ? "25.26%" : "16%"}
-                            isT1={isT1} // 必須傳入以計算寬度
+                            isT1={isT1} 
                         />
                     ))}
                 </div>
@@ -622,14 +631,14 @@
                                 {/* 將自動計算出的 autoScale 套用在外層，確保整體等比縮放 */}
                                 <div style={{ transform: `scale(${autoScale})`, transformOrigin: 'center bottom', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                                     {config.zhuyin && cell.zhuyin ? (
-                                        <React.Fragment>
+                                        <>
                                             <div style={{ marginBottom: '2px' }}>
                                                 <StrokeText text={cell.zhuyin} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={strokeWidth * 0.6} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize * 0.45} letterSpacing={0} />
                                             </div>
                                             <div>
                                                 <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={strokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={letterSpacing} />
                                             </div>
-                                        </React.Fragment>
+                                        </>
                                     ) : (
                                         <div>
                                             <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={strokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={letterSpacing} />
