@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>點讀小卡製作工具 v1.2</title>
+    <title>點讀小卡製作工具</title>
     
     <!-- 載入 Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
@@ -46,7 +46,7 @@
             document.head.appendChild(script);
         });
 
-        // --- 文字描邊專用組件 ---
+        // --- 文字描邊專用組件 (使用 text-shadow 解決 iOS/PDF 描邊消失 Bug) ---
         const StrokeText = ({ text, color, strokeColor, strokeWidth, strokeOpacity, fontSize, letterSpacing }) => {
             const textShadow = useMemo(() => {
                 if (strokeWidth <= 0) return 'none';
@@ -67,7 +67,7 @@
                     const y = (strokeWidth * Math.sin(angle)).toFixed(1);
                     shadows.push(`${x}px ${y}px 0px ${rgba}`);
                 }
-                // 較粗的描邊補上內圈
+                // 較粗的描邊補上內圈，防止文字邊緣出現空隙
                 if (strokeWidth > 2) {
                     const innerWidth = strokeWidth / 2;
                     for (let i = 0; i < steps; i++) {
@@ -82,7 +82,7 @@
 
             if (!text) return null;
             
-            // 使用絕對的像素級行高
+            // 使用絕對的像素級行高防跑位
             const fixedLineHeight = `${fontSize * 1.2}px`;
 
             return (
@@ -396,7 +396,7 @@
                             onClick={() => setActiveElement({ type: 'cell', index: idx })}
                             config={config} innerBorder={innerBorderClass}
                             circleSize={isT1 ? "25.26%" : "16%"}
-                            isT1={isT1} // 傳入模板狀態以利文字寬度計算
+                            isT1={isT1} // 必須傳入以計算寬度
                         />
                     ))}
                 </div>
@@ -564,33 +564,39 @@
             );
         }
 
-        // --- 核心：單元格渲染與「智慧字串寬度估算防爆框」技術 ---
+        // --- 核心：單元格渲染與「智慧字串寬度估算防爆框」技術 (修復迴圈崩潰防呆版) ---
         function CellRenderer({ cell, idx, isActive, onClick, config, innerBorder, circleSize, isT1 }) {
-            const finalFontSize = cell.textFontSize;
+            // 防呆處理，確保取得的數值皆為有效數字
+            const finalFontSize = Number(cell.textFontSize) || 61;
+            const letterSpacing = Number(cell.textLetterSpacing) || 0;
+            const strokeWidth = Number(cell.textStrokeWidth) || 0;
             
             // 1. 計算當前模板下，單元格的最大安全寬度 (保留左右各約 20px 的安全距離)
-            const MAX_WIDTH = isT1 ? 320 : 560;
+            const MAX_WIDTH = isT1 ? 340 : 520;
             
-            // 2. 智慧估算當前輸入字串的實際渲染寬度
+            // 2. 智慧估算當前輸入字串的實際渲染寬度 (徹底修復 Babel 迴圈崩潰問題)
             let estWidth = 0;
-            const text = cell.text || '';
-            for (let char of text) {
+            const textStr = String(cell.text || '');
+            
+            // 使用傳統 for 迴圈，避免舊版 Babel 缺乏 Symbol.iterator 導致 React 崩潰
+            for (let i = 0; i < textStr.length; i++) {
+                const charCode = textStr.charCodeAt(i);
                 // 若為英數字元(ASCII)，寬度約為全寬的 0.6 倍，中文字則算全寬
-                if (char.charCodeAt(0) < 256) {
+                if (charCode >= 0 && charCode <= 255) {
                     estWidth += finalFontSize * 0.6;
                 } else {
                     estWidth += finalFontSize;
                 }
             }
+            
             // 加上字距的總寬度
-            if (text.length > 1) {
-                estWidth += (text.length - 1) * cell.textLetterSpacing;
+            if (textStr.length > 1) {
+                estWidth += (textStr.length - 1) * letterSpacing;
             }
             // 加上描邊的粗細 (左右兩側)，避免描邊被切掉
-            estWidth += cell.textStrokeWidth * 2;
+            estWidth += strokeWidth * 2;
 
             // 3. 計算自動防爆框的縮放比例 (Scale)
-            // 如果估算寬度大於最大安全寬度，就等比例縮小；否則維持 1 倍
             let autoScale = 1;
             if (estWidth > MAX_WIDTH && estWidth > 0) {
                 autoScale = MAX_WIDTH / estWidth;
@@ -613,20 +619,20 @@
                     {(cell.text || cell.zhuyin) && (
                         <div className="absolute pointer-events-none flex justify-center items-end" style={{ bottom: '8px', left: 0, right: 0 }}>
                             <div className="flex items-center justify-center" style={{ position: 'relative', left: `${cell.textX}px`, top: `${cell.textY}px` }}>
-                                {/* 將自動計算出的 autoScale 套用在外層，確保整體（包含注音、字距、描邊）等比縮放 */}
-                                <div style={{ transform: `scale(${autoScale})`, transformOrigin: 'center bottom' }}>
+                                {/* 將自動計算出的 autoScale 套用在外層，確保整體等比縮放 */}
+                                <div style={{ transform: `scale(${autoScale})`, transformOrigin: 'center bottom', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
                                     {config.zhuyin && cell.zhuyin ? (
-                                        <div className="flex flex-col items-center justify-center">
+                                        <React.Fragment>
                                             <div style={{ marginBottom: '2px' }}>
-                                                <StrokeText text={cell.zhuyin} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth * 0.6} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize * 0.45} letterSpacing={0} />
+                                                <StrokeText text={cell.zhuyin} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={strokeWidth * 0.6} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize * 0.45} letterSpacing={0} />
                                             </div>
                                             <div>
-                                                <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={cell.textLetterSpacing} />
+                                                <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={strokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={letterSpacing} />
                                             </div>
-                                        </div>
+                                        </React.Fragment>
                                     ) : (
                                         <div>
-                                            <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={cell.textStrokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={cell.textLetterSpacing} />
+                                            <StrokeText text={cell.text} color={cell.textColor} strokeColor={cell.textStrokeColor} strokeWidth={strokeWidth} strokeOpacity={cell.textStrokeOpacity} fontSize={finalFontSize} letterSpacing={letterSpacing} />
                                         </div>
                                     )}
                                 </div>
